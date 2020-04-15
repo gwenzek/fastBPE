@@ -27,9 +27,9 @@ const c = @cImport({
     // @cInclude("vector");
 });
 
-// const alloc = std.heap.c_allocator;
-const c_alloc = std.heap.c_allocator;
-var alloc: *std.mem.Allocator = &std.heap.loggingAllocator(c_alloc, std.io.getStdOut().outStream()).allocator;
+pub const alloc = std.heap.c_allocator;
+// const c_alloc = std.heap.c_allocator;
+// var alloc: *std.mem.Allocator = &std.heap.loggingAllocator(c_alloc, std.io.getStdOut().outStream()).allocator;
 
 // using namespace std;
 
@@ -52,10 +52,6 @@ const kReadOnly = std.fs.File.OpenFlags{ .read = true };
 // }
 // extern fn malloc(size: size_t) ?*u8;
 
-const Slice = struct {
-    start: u32 = 0, end: u32 = 0
-};
-
 fn strCmp(word1: []const u8, word2: []const u8) bool {
     if (word1.len > word2.len) return !(strCmp(word2, word1));
 
@@ -64,8 +60,24 @@ fn strCmp(word1: []const u8, word2: []const u8) bool {
         if (c1 == c2) continue;
         return c1 < c2;
     }
-    return true;
+    // if lengths match then they are equal and "word1 < word2" is false.
+    return word1.len < word2.len;
 }
+
+test "compare string to prefix" {
+    assert(strCmp("foo", "foobar"));
+    assert(!strCmp("foobar", "foo"));
+}
+
+test "compare string" {
+    assert(!strCmp("foo", "bar"));
+    assert(strCmp("bar", "foo"));
+}
+
+const Slice = struct {
+    start: u32 = 0,
+    end: u32 = 0,
+};
 
 fn readTextFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
     var n_words: u64 = 0;
@@ -80,8 +92,8 @@ fn readTextFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
             continue;
         }
 
-        if (word.end + 1 == buffer.len) {
-            // next_char isn't a space, but a valid char
+        if (word.end + 1 == buffer.len and buffer[word.end] != '\n') {
+            // only include last file char if it's not a newline
             word.end += 1;
         }
 
@@ -134,9 +146,9 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
     warn("Read {} words ({} unique) from text file.\n", .{ n_words, word_count.size });
 }
 
-const Vocab = std.StringHashMap(u32);
+pub const Vocab = std.StringHashMap(u32);
 
-fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
+pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
     if (kv1.value == kv2.value)
         return strCmp(kv1.key, kv2.key);
     return kv1.value > kv2.value;
@@ -170,28 +182,17 @@ fn getVocab(inputFile1: []const u8, inputFile2: []const u8) !void {
     std.sort.sort(Vocab.KV, word_count_arr, hasMoreOccurences);
     // std.sort.sort(Vocab.Entry, word_count, hasMoreOccurencesEntry);
 
+    const stdout_file = std.io.getStdOut();
     // print sorted vocab
     for (word_count_arr) |wc|
-        warn("{} {}\n", .{ wc.key, wc.value });
+        try stdout_file.outStream().print("{} {}\n", .{ wc.key, wc.value });
 }
 
 fn u32LessThan(x: u32, y: u32) bool {
     return x < y;
 }
 
-pub fn test_() anyerror!void {
-    // var x1: []const u8 = "hello";
-    // var x2: []const u8 = [5]u8{ 'h', 'e', 'l', 'l', 111 };
-    // var arr0: [1025]u32 = undefined;
-    var arr: []u32 = try alloc.alloc(u32, 2048);
-    for (arr) |*item, i| {
-        item.* = @intCast(u32, i);
-    }
-    std.sort.sort(u32, arr, u32LessThan);
-}
-
 pub fn main() anyerror!void {
-    // try test_();
     var args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
     for (args) |arg, i| {
