@@ -1,3 +1,6 @@
+test: small_diff
+	zig test fastBPE/fastBPE.zig
+
 build: ./zig-cache/bin/fastBPE ./fast
 
 ./zig-cache/bin/fastBPE: fastBPE/fastBPE.zig
@@ -6,19 +9,28 @@ build: ./zig-cache/bin/fastBPE ./fast
 ./fast: fastBPE/fastBPE.hpp fastBPE/main.cc
 	g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o $@
 
-output/readme_zig_vocab.txt: ./zig-cache/bin/fastBPE
+output/%.zig.vocab.txt: data/% ./zig-cache/bin/fastBPE
 	mkdir -p output
-	$< `realpath README.md` > $@
+	./zig-cache/bin/fastBPE getvocab `realpath $<` > $@
 
-output/readme_cpp_vocab.txt: ./fast
+output/%.zig_stdin.vocab.txt: data/% ./zig-cache/bin/fastBPE
 	mkdir -p output
-	./fast getvocab `realpath README.md` > $@
+	cat $< | ./zig-cache/bin/fastBPE getvocab - > $@
 
-diff: output/readme_cpp_vocab.txt output/readme_zig_vocab.txt
-	diff -W 80 $^
+output/%.cpp.vocab.txt: data/% ./fast
+	mkdir -p output
+	./fast getvocab `realpath $<` > $@
 
-test: diff
-	zig test fastBPE/fastBPE.zig
+small_diff: output/readme.cpp.vocab.txt output/readme.zig.vocab.txt output/readme.zig_stdin.vocab.txt
+	diff -W80 $< output/readme.zig.vocab.txt
+	diff -W80 $< output/readme.zig_stdin.vocab.txt
+
+big_diff: output/fr.train.cpp.vocab.txt output/fr.train.zig.vocab.txt output/fr.train.zig_stdin.vocab.txt
+	diff -W80 $< output/fr.train.zig.vocab.txt
+	diff -W80 $< output/fr.train.zig_stdin.vocab.txt
+
+build_server:
+	fswatch -o fastBPE/fastBPE.zig | xargs -n1 -I{} zsh -c "clear; (zig build && echo BUILD_SUCCEED) || echo BUILD_FAILED"
 
 clean:
 	[ -f ./fast ] ; rm ./fast
