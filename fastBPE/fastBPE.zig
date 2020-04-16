@@ -28,13 +28,13 @@ const c = @cImport({
     // @cInclude("vector");
 });
 
-pub const alloc = std.heap.c_allocator;
+var alloc: *Allocator = undefined;
 // const c_alloc = std.heap.c_allocator;
 // var alloc: *std.mem.Allocator = &std.heap.loggingAllocator(c_alloc, std.io.getStdOut().outStream()).allocator;
 
 // using namespace std;
 
-const kMaxPairs: i32 = 1000 * 1000 * 1000;
+const kMaxPairs: i32 = 1000; //* 1000 * 1000;
 const kThreads: i32 = max(1, min(10, int(c.thread.hardware_concurrency())));
 const kEndWord = "</w>";
 const kEndWordLength: i32 = 4;
@@ -147,7 +147,47 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
     warn("Read {} words ({} unique) from text file.\n", .{ n_words, word_count.size });
 }
 
-pub const Vocab = std.StringHashMap(u32);
+pub const Vocab = std.StringHashMap(i32);
+pub const WordIndex = struct {
+    ids: std.StringHashMap(u32) = undefined,
+    tokens: std.ArrayList([]const u8) = undefined,
+
+    pub fn init(allocator: *Allocator, capacity: usize) !WordIndex {
+        var idx = WordIndex{
+            .ids = std.StringHashMap(u32).init(allocator),
+            .tokens = std.ArrayList([]const u8).init(allocator),
+        };
+        try idx.ids.ensureCapacity(capacity);
+        try idx.tokens.ensureCapacity(capacity);
+        return idx;
+    }
+
+    pub fn getOrAdd(self: *WordIndex, word: []const u8, end_of_word: bool) !u32 {
+        var new_token = word;
+        var need_free = false;
+        if (end_of_word) {
+            new_token = try concat(self.ids.allocator, word, kEndWord);
+            need_free = true;
+        }
+        defer {
+            if (need_free) {
+                // warn("We should free {}", .{new_token});
+                self.ids.allocator.free(new_token);
+            }
+        }
+
+        if (self.ids.getValue(new_token)) |id| {
+            return id;
+        } else {
+            var new_id = @intCast(u32, self.tokens.items.len);
+            _ = self.ids.putAssumeCapacity(new_token, new_id);
+            self.tokens.appendAssumeCapacity(new_token);
+            need_free = false;
+            warn("'{}' -> id: {}, ", .{ new_token, new_id });
+            return new_id;
+        }
+    }
+};
 
 pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
     if (kv1.value == kv2.value)
@@ -210,7 +250,7 @@ const PairCount = struct {
     }
 };
 const PairCounts = std.AutoHashMap(WordPair, PairCount);
-const Where = std.AutoHashMap(WordPair, *std.AutoHashMap(u32, void));
+const Where = std.AutoHashMap(WordPair, std.AutoHashMap(u32, void));
 
 const LearnBpeState = struct {
     pair_counts: PairCounts,
@@ -246,7 +286,7 @@ const LearnBpeState = struct {
                 _ = self.pair_counts.putAssumeCapacity(pair, pc);
                 var sentences = std.AutoHashMap(u32, void).init(self.where.allocator);
                 _ = try sentences.put(sentence_id, {});
-                _ = self.where.putAssumeCapacity(pair, &sentences);
+                _ = self.where.putAssumeCapacity(pair, sentences);
             }
         }
     }
@@ -263,31 +303,32 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
     }
 
     // a token is an int, it represents a string
-    var token_to_int = Vocab.init(alloc);
-    var int_to_token = std.ArrayList([]const u8).init(alloc);
-
-    var words = std.ArrayList(*std.ArrayList(u32)).init(alloc);
+    const reservation = @intCast(u32, 20 * kNPairs);
+    var idx = try WordIndex.init(alloc, reservation);
+    var words = std.ArrayList(std.ArrayList(u32)).init(alloc);
     var counts = std.ArrayList(i32).init(alloc);
 
-    // tokenize(word_count, token_to_int, int_to_token, words, counts);
-    var state = try LearnBpeState.init(alloc, kMaxPairs);
+    warn("starting tokenize\n", .{});
+    try tokenize(&word_count, &idx, &words, &counts);
+    var state = try LearnBpeState.init(alloc, reservation);
 
     const print = std.io.getStdOut().outStream().print;
     var counts_span = counts.span();
     const all_words = words.span();
+
+    warn("starting count_in_word\n", .{});
     for (all_words) |word, wi| {
         try count_in_word(word, @intCast(u32, wi), counts_span[wi], &state);
     }
+    warn("starting max_p\n", .{});
     var i: usize = 0;
     while (i < kNPairs) : (i += 1) {
-        var max_p = find_maxp(&state.contiguous_counts);
+        var max_p = find_maxp(&state.contiguous_counts) orelse break;
         // create new token for pair. replace
-        var span = int_to_token.span();
-        var new_token = try concat(int_to_token.allocator, span[max_p.w1], span[max_p.w2]);
-        _ = try print("{} {} {}\n", .{ span[max_p.w1], span[max_p.w2], max_p.count });
-        var new_token_id = @intCast(u32, span.len);
-        int_to_token.appendAssumeCapacity(new_token);
-        _ = try token_to_int.put(new_token, new_token_id);
+        var tokens = idx.tokens.span();
+        var new_token = try concat(idx.tokens.allocator, tokens[max_p.w1], tokens[max_p.w2]);
+        _ = try print("{} {} {}\n", .{ tokens[max_p.w1], tokens[max_p.w2], max_p.count });
+        var new_token_id = try idx.getOrAdd(new_token, false);
 
         var where_it = state.where.get(WordPair{ .w1 = max_p.w1, .w2 = max_p.w2 }).?.value.iterator();
         while (where_it.next()) |wi| {
@@ -337,14 +378,46 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
     }
 }
 
-fn count_in_word(word: *std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpeState) !void {
+fn tokenize(word_count: *Vocab, idx: *WordIndex, full_words: *std.ArrayList(std.ArrayList(u32)), counts: *std.ArrayList(i32)) !void {
+    var it = word_count.iterator();
+    try full_words.ensureCapacity(word_count.count());
+    try counts.ensureCapacity(word_count.count());
+    while (it.next()) |wc| {
+        var realLength: i32 = 0;
+        var word: []const u8 = wc.key;
+        var current_word = std.ArrayList(u32).init(full_words.allocator);
+        try current_word.ensureCapacity(word.len);
+        counts.appendAssumeCapacity(wc.value);
+
+        var lastStart: usize = 0;
+        // TODO: try std.unicode.Utf8Iterator
+        for (word) |char, pos| {
+            if (pos == 0)
+                continue;
+            if ((char & 0xc0) == 0x80) // continuation byte
+                continue;
+            realLength += 1;
+            var id = try idx.getOrAdd(word[lastStart..pos], false);
+            current_word.appendAssumeCapacity(id);
+            lastStart = pos;
+        }
+        var id = try idx.getOrAdd(word[lastStart..], true);
+        current_word.appendAssumeCapacity(id);
+        full_words.appendAssumeCapacity(current_word);
+    }
+}
+
+fn count_in_word(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpeState) !void {
     var first_round = true;
     var cur_pair = WordPair{};
-    var pair_counts = state.*.pair_counts;
-    var where = state.*.where;
-    var contiguous_counts = state.*.contiguous_counts;
+    // Use pointers to actually modify the state.
+    var pair_counts = &state.pair_counts;
+    var where = &state.where;
+    var contiguous_counts = &state.contiguous_counts;
+    try contiguous_counts.ensureCapacity(contiguous_counts.items.len + word.items.len);
 
-    for (word.*.span()) |token, i| {
+    warn("word {}({}) len: {},", .{ wi, &word.items, word.span().len });
+    for (word.span()) |token, i| {
         cur_pair.w1 = cur_pair.w2;
         cur_pair.w2 = token;
         if (i == 0) // cur_pair.w1 isn't correctly initialized
@@ -352,6 +425,7 @@ fn count_in_word(word: *std.ArrayList(u32), wi: u32, count: i32, state: *LearnBp
 
         if (pair_counts.get(cur_pair)) |pair_count| {
             pair_count.value.count += count;
+            warn("({}, {}) += {}, ", .{ cur_pair.w1, cur_pair.w2, count });
             var w = where.get(cur_pair);
             if (count > 0) {
                 _ = try w.?.value.put(wi, {});
@@ -359,19 +433,25 @@ fn count_in_word(word: *std.ArrayList(u32), wi: u32, count: i32, state: *LearnBp
                 _ = w.?.value.remove(wi);
             }
         } else {
+            warn("({}, {}) := {}, ", .{ cur_pair.w1, cur_pair.w2, count });
+
             const pair_count = PairCount.init(cur_pair, count);
             contiguous_counts.appendAssumeCapacity(pair_count);
+            warn("len(contiguous_counts) == {}", .{contiguous_counts.items.len});
+
             _ = try pair_counts.put(cur_pair, pair_count);
             var set = std.AutoHashMap(u32, void).init(where.allocator);
             if (count > 0) _ = try set.put(wi, {});
-            _ = try where.put(cur_pair, &set);
+            _ = try where.put(cur_pair, set);
         }
     }
+    warn("len(contiguous_counts) == {}", .{contiguous_counts.items.len});
 }
 
-fn find_maxp(contiguous_counts: *std.ArrayList(PairCount)) *PairCount {
+fn find_maxp(contiguous_counts: *std.ArrayList(PairCount)) ?*PairCount {
     var max_c: i32 = 0;
-    var counts = contiguous_counts.*.span();
+    var counts = contiguous_counts.items;
+    assert(counts.len > 0);
     var max_p: *PairCount = &counts[0];
     for (counts[1..]) |*x| {
         if (x.count > max_c) {
@@ -387,6 +467,10 @@ fn find_maxp(contiguous_counts: *std.ArrayList(PairCount)) *PairCount {
 }
 
 pub fn main() anyerror!void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    alloc = &arena.allocator;
+
     var args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
     for (args) |arg, i| {
@@ -399,8 +483,8 @@ pub fn main() anyerror!void {
     if (std.ascii.eqlIgnoreCase(args[1], "getvocab")) {
         try getVocab(args[2], "");
     } else if (std.ascii.eqlIgnoreCase(args[1], "learnbpe")) {
-        const n_bpe: u32 = 1 << 15;
-        try learnbpe(n_bpe, args[2], "");
+        const n_bpe = try std.fmt.parseInt(i32, args[2], 10);
+        try learnbpe(n_bpe, args[3], "");
     } else {
         std.process.exit(1);
     }
