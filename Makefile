@@ -17,28 +17,34 @@ output/%.zig_stdin.vocab.txt: data/% ./zig-cache/bin/fastBPE
 	cat $< | ./zig-cache/bin/fastBPE getvocab - > $@
 
 output/%.cpp.vocab.txt: data/% ./fast
-	./fast learnbpe 200 `realpath $<` > $@
+	./fast getvocab `realpath $<` > $@
 
 output/%.zig.bpe.txt: data/% ./zig-cache/bin/fastBPE
-	./zig-cache/bin/fastBPE learnbpe 200 `realpath $<` > $@
+	time ./zig-cache/bin/fastBPE learnbpe 40000 `realpath $<` > $@
 
 output/%.zig_stdin.bpe.txt: data/% ./zig-cache/bin/fastBPE
-	cat $< | ./zig-cache/bin/fastBPE learnbpe - > $@
+	cat $< | ./zig-cache/bin/fastBPE learnbpe 40000 - > $@
 
 output/%.cpp.bpe.txt: data/% ./fast
-	./fast learnbpe `realpath $<` > $@
+	time ./fast learnbpe 40000 `realpath $<` > $@
 
 small_vocab_diff: output/readme.cpp.vocab.txt output/readme.zig.vocab.txt output/readme.zig_stdin.vocab.txt
 	diff -W80 $< output/readme.zig.vocab.txt
 	diff -W80 $< output/readme.zig_stdin.vocab.txt
 
-small_bpe_diff: output/readme.cpp.bpe.txt output/readme.zig.bpe.txt output/readme.zig_stdin.vocab.txt
-	diff -W80 $< output/readme.zig.bpe.txt
-	diff -W80 $< output/readme.zig_stdin.bpe.txt
+small_bpe_diff: output/sample.txt.cpp.bpe.txt output/sample.txt.zig.bpe.txt output/sample.txt.zig_stdin.bpe.txt
+	# BPE aren't the same because it depends on the hashmap iteration order in the two languages.
+	diff -y -W80 $< output/sample.txt.zig.bpe.txt
+	diff -y -W80 $< output/sample.txt.zig_stdin.bpe.txt
 
-big_diff: output/fr.train.cpp.vocab.txt output/fr.train.zig.vocab.txt output/fr.train.zig_stdin.vocab.txt
-	diff -W80 $< output/fr.train.zig.vocab.txt
-	diff -W80 $< output/fr.train.zig_stdin.vocab.txt
+big_vocab_diff: output/fr.train.cpp.vocab.txt output/fr.train.zig.vocab.txt output/fr.train.zig_stdin.vocab.txt
+	diff -W80 output/fr.train.zig_stdin.vocab.txt output/fr.train.zig_stdin.vocab.txt | head
+	diff -W80 $< output/fr.train.zig.vocab.txt | head
+
+big_bpe_diff: output/fr.train.cpp.bpe.txt output/fr.train.zig.bpe.txt output/fr.train.zig_stdin.bpe.txt
+	# BPE aren't the same because it depends on the hashmap iteration order in the two languages.
+	diff -W80 output/fr.train.zig_stdin.bpe.txt output/fr.train.zig_stdin.bpe.txt | head
+	diff -W80 $< output/fr.train.zig.bpe.txt | head
 
 build_server:
 	fswatch -o fastBPE/fastBPE.zig | xargs -n1 -I{} zsh -c "clear; (zig build && echo BUILD_SUCCEED) || echo BUILD_FAILED"

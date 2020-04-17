@@ -1,10 +1,9 @@
-// #pragma once
-
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const warn = std.debug.warn;
+const debug = std.debug.warn;
 
 const c = @cImport({
     //   @cInclude("algorithm");
@@ -51,7 +50,6 @@ const kReadOnly = std.fs.File.OpenFlags{ .read = true };
 //   }
 //   return fd;
 // }
-// extern fn malloc(size: size_t) ?*u8;
 
 fn strCmp(word1: []const u8, word2: []const u8) bool {
     if (word1.len > word2.len) return !(strCmp(word2, word1));
@@ -75,33 +73,29 @@ test "compare string" {
     assert(strCmp("bar", "foo"));
 }
 
-const Slice = struct {
-    start: u32 = 0,
-    end: u32 = 0,
-};
-
 fn readTextFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
     var n_words: u64 = 0;
-    var word = Slice{};
+    var w_start: u32 = 0;
+    var w_end: u32 = 0;
     var next_char: u8 = ' ';
-    // warn("Read line '{}'\n", .{ buffer });
-    while (word.end < buffer.len) {
-        next_char = buffer[word.end];
-        // warn("Read char '{}' at ({}/{})\n", .{ next_char, word.end, buffer.len });
-        if (next_char != ' ' and next_char != '\n' and word.end + 1 < buffer.len) {
-            word.end += 1;
+    // debug("Read line '{}'\n", .{ buffer });
+    while (w_end < buffer.len) {
+        next_char = buffer[w_end];
+        // debug("Read char '{}' at ({}/{})\n", .{ next_char, w_end, buffer.len });
+        if (next_char != ' ' and next_char != '\n' and w_end + 1 < buffer.len) {
+            w_end += 1;
             continue;
         }
 
-        if (word.end + 1 == buffer.len and buffer[word.end] != '\n') {
+        if (w_end + 1 == buffer.len and buffer[w_end] != '\n') {
             // only include last file char if it's not a newline
-            word.end += 1;
+            w_end += 1;
         }
 
         // end of word
-        const w = buffer[word.start..word.end];
-        word.start = word.end + 1;
-        word.end = word.start;
+        const w = buffer[w_start..w_end];
+        w_start = w_end + 1;
+        w_end = w_start;
 
         if (w.len == 0) continue;
         n_words += 1;
@@ -171,7 +165,7 @@ pub const WordIndex = struct {
         }
         defer {
             if (need_free) {
-                // warn("We should free {}", .{new_token});
+                // debug("We should free {}", .{new_token});
                 self.ids.allocator.free(new_token);
             }
         }
@@ -183,7 +177,7 @@ pub const WordIndex = struct {
             _ = self.ids.putAssumeCapacity(new_token, new_id);
             self.tokens.appendAssumeCapacity(new_token);
             need_free = false;
-            warn("'{}' -> id: {}, ", .{ new_token, new_id });
+            // debug("'{}' -> id: {}, ", .{ new_token, new_id });
             return new_id;
         }
     }
@@ -194,12 +188,6 @@ pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
         return strCmp(kv1.key, kv2.key);
     return kv1.value > kv2.value;
 }
-
-// fn hasMoreOccurencesEntry(entry1: Vocab.Entry, entry2: Vocab.Entry) bool {
-//     if (!entry1.used or !entry2.used)
-//         return entry1.used <= entry2.used;
-//     return entry1.kv.value <= entry2.kv.value;
-// }
 
 fn getVocab(inputFile1: []const u8, inputFile2: []const u8) !void {
     // get vocab
@@ -214,7 +202,7 @@ fn getVocab(inputFile1: []const u8, inputFile2: []const u8) !void {
     var it = word_count.iterator();
     while (it.next()) |wc| {
         word_count_arr[i] = wc.*;
-        // warn("! {} {}\n", .{ word_count_arr[i].key, word_count_arr[i].value });
+        // debug("! {} {}\n", .{ word_count_arr[i].key, word_count_arr[i].value });
         i += 1;
     }
 
@@ -249,7 +237,7 @@ const PairCount = struct {
         return PairCount{ .w1 = pair.w1, .w2 = pair.w2, .count = count };
     }
 };
-const PairCounts = std.AutoHashMap(WordPair, PairCount);
+const PairCounts = std.AutoHashMap(WordPair, *PairCount);
 const Where = std.AutoHashMap(WordPair, std.AutoHashMap(u32, void));
 
 const LearnBpeState = struct {
@@ -263,31 +251,41 @@ const LearnBpeState = struct {
             .where = Where.init(allocator),
             .contiguous_counts = std.ArrayList(PairCount).init(allocator),
         };
-        try state.contiguous_counts.ensureCapacity(capacity);
-        try state.pair_counts.ensureCapacity(capacity);
-        try state.where.ensureCapacity(capacity);
+        try state.ensureExtraCapacity(capacity);
         return state;
     }
 
-    pub fn change_count(self: *LearnBpeState, pair: WordPair, v: i32, sentence_id: u32) !void {
-        if (v == 0) return;
+    pub fn ensureExtraCapacity(self: *LearnBpeState, capacity: usize) !void {
+        var len = self.contiguous_counts.items.len;
+        try self.contiguous_counts.ensureCapacity(len + capacity);
+        try self.pair_counts.ensureCapacity(len + capacity);
+        try self.where.ensureCapacity(len + capacity);
+    }
 
+    pub fn inc_count(self: *LearnBpeState, w1: u32, w2: u32, v: i32, wid: u32) !void {
+        if (v == 0) return;
+        const pair = WordPair{ .w1 = w1, .w2 = w2 };
         if (self.pair_counts.get(pair)) |kv| {
             // assert(kv.value.count + v >= 0);
+            const old_count = kv.value.count;
             kv.value.count += v;
+            // debug("inc_count: update {} {} {}={}+{}, ", .{ kv.value.w1, kv.value.w2, kv.value.count, old_count, v });
             if (v > 0) {
-                var sentences = self.where.getValue(pair).?;
-                _ = try sentences.put(sentence_id, {});
+                var words = &self.where.get(pair).?.value;
+                _ = try words.put(wid, {});
             }
+            // should we remove from where if kv.value.count falls to 0 ?
         } else {
-            if (v > 0) {
-                const pc = PairCount.init(pair, v);
-                self.contiguous_counts.appendAssumeCapacity(pc);
-                _ = self.pair_counts.putAssumeCapacity(pair, pc);
-                var sentences = std.AutoHashMap(u32, void).init(self.where.allocator);
-                _ = try sentences.put(sentence_id, {});
-                _ = self.where.putAssumeCapacity(pair, sentences);
-            }
+            // can't decrement from inexisting pair.
+            assert(v > 0);
+            const pc = PairCount.init(pair, v);
+            // debug("inc_count: append {} {} {}, ", .{ pc.w1, pc.w2, pc.count });
+            var pc_ptr: *PairCount = self.contiguous_counts.addOneAssumeCapacity();
+            pc_ptr.* = pc;
+            _ = self.pair_counts.putAssumeCapacity(pair, pc_ptr);
+            var words = std.AutoHashMap(u32, void).init(self.where.allocator);
+            _ = try words.put(wid, {});
+            _ = self.where.putAssumeCapacity(pair, words);
         }
     }
 };
@@ -308,7 +306,7 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
     var words = std.ArrayList(std.ArrayList(u32)).init(alloc);
     var counts = std.ArrayList(i32).init(alloc);
 
-    warn("starting tokenize\n", .{});
+    // debug("\nstarting tokenize\n", .{});
     try tokenize(&word_count, &idx, &words, &counts);
     var state = try LearnBpeState.init(alloc, reservation);
 
@@ -316,29 +314,31 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
     var counts_span = counts.span();
     const all_words = words.span();
 
-    warn("starting count_in_word\n", .{});
+    // debug("\nstarting count_in_word\n", .{});
     for (all_words) |word, wi| {
         try count_in_word(word, @intCast(u32, wi), counts_span[wi], &state);
     }
-    warn("starting max_p\n", .{});
+    // debug("\nstarting max_p\n", .{});
     var i: usize = 0;
     while (i < kNPairs) : (i += 1) {
         var max_p = find_maxp(&state.contiguous_counts) orelse break;
         // create new token for pair. replace
-        var tokens = idx.tokens.span();
-        var new_token = try concat(idx.tokens.allocator, tokens[max_p.w1], tokens[max_p.w2]);
-        _ = try print("{} {} {}\n", .{ tokens[max_p.w1], tokens[max_p.w2], max_p.count });
+        var tokens = &idx.tokens.items;
+        // debug("\nmax_p {} {} {}, ", .{ max_p.w1, max_p.w2, max_p.count });
+        var new_token = try concat(idx.tokens.allocator, tokens.*[max_p.w1], tokens.*[max_p.w2]);
+        _ = try print("{} {} {}\n", .{ tokens.*[max_p.w1], tokens.*[max_p.w2], max_p.count });
         var new_token_id = try idx.getOrAdd(new_token, false);
+        // debug("new_token_id {}, ", .{new_token_id});
 
         var where_it = state.where.get(WordPair{ .w1 = max_p.w1, .w2 = max_p.w2 }).?.value.iterator();
         while (where_it.next()) |wi| {
-            var sentence = all_words[wi.key];
-            var full_sentence = all_words[wi.key].items;
+            var full_word = &all_words[wi.key];
             var cwi = counts.items[wi.key];
-            var cur_pair = WordPair{ .w2 = full_sentence[0] };
+            try state.ensureExtraCapacity(full_word.items.len);
+            var cur_pair = WordPair{ .w2 = full_word.items[0] };
             var j: usize = 0;
-            while (j < sentence.items.len) : (j += 1) {
-                const w = full_sentence[j];
+            while (j < full_word.items.len) : (j += 1) {
+                const w = full_word.items[j];
                 if (j == 0) continue;
 
                 cur_pair.w1 = cur_pair.w2;
@@ -351,25 +351,22 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
 
                 // change count for word before us.
                 if (j > 1) {
-                    const w0 = full_sentence[j - 2];
-                    try state.change_count(WordPair{
-                        .w1 = w0,
-                        .w2 = cur_pair.w1,
-                    }, -cwi, wi.key);
-                    try state.change_count(WordPair{ .w1 = w0, .w2 = new_token_id }, cwi, wi.key);
+                    const w0 = full_word.items[j - 2];
+                    try state.inc_count(w0, cur_pair.w1, -cwi, wi.key);
+                    try state.inc_count(w0, new_token_id, cwi, wi.key);
                 }
 
-                // Remove [w1, w2] from sentence insert w1@@w2 instead.
+                // Remove [w1, w2] from full_word insert w1@@w2 instead.
                 // TODO only mark the token and remove later.
-                full_sentence[j - 1] = new_token_id;
-                _ = sentence.orderedRemove(j);
+                full_word.items[j - 1] = new_token_id;
 
                 // update count for next token
-                if (j < sentence.items.len) {
-                    const w3 = full_sentence[j];
-                    try state.change_count(WordPair{ .w1 = cur_pair.w2, .w2 = w3 }, -cwi, wi.key);
-                    try state.change_count(WordPair{ .w1 = new_token_id, .w2 = w3 }, cwi, wi.key);
+                if (j + 1 < full_word.items.len) {
+                    const w3 = full_word.items[j + 1];
+                    try state.inc_count(cur_pair.w2, w3, -cwi, wi.key);
+                    try state.inc_count(new_token_id, w3, cwi, wi.key);
                 }
+                _ = full_word.orderedRemove(j);
 
                 cur_pair.w2 = new_token_id;
             }
@@ -416,7 +413,6 @@ fn count_in_word(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpe
     var contiguous_counts = &state.contiguous_counts;
     try contiguous_counts.ensureCapacity(contiguous_counts.items.len + word.items.len);
 
-    warn("word {}({}) len: {},", .{ wi, &word.items, word.span().len });
     for (word.span()) |token, i| {
         cur_pair.w1 = cur_pair.w2;
         cur_pair.w2 = token;
@@ -424,45 +420,51 @@ fn count_in_word(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpe
             continue;
 
         if (pair_counts.get(cur_pair)) |pair_count| {
+            const old_cont = pair_count.value.count;
             pair_count.value.count += count;
-            warn("({}, {}) += {}, ", .{ cur_pair.w1, cur_pair.w2, count });
             var w = where.get(cur_pair);
             if (count > 0) {
                 _ = try w.?.value.put(wi, {});
             } else {
                 _ = w.?.value.remove(wi);
             }
+            // debug("update {} {} {}={}+{}, ", .{ pair_count.value.w1, pair_count.value.w2, pair_count.value.count, old_cont, count });
         } else {
-            warn("({}, {}) := {}, ", .{ cur_pair.w1, cur_pair.w2, count });
-
             const pair_count = PairCount.init(cur_pair, count);
-            contiguous_counts.appendAssumeCapacity(pair_count);
-            warn("len(contiguous_counts) == {}", .{contiguous_counts.items.len});
+            var pc_ptr: *PairCount = contiguous_counts.addOneAssumeCapacity();
+            pc_ptr.* = pair_count;
+            // debug("append {} {} {}, ", .{ pair_count.w1, pair_count.w2, pair_count.count });
+            // debug("len(contiguous_counts) == {}", .{contiguous_counts.items.len});
 
-            _ = try pair_counts.put(cur_pair, pair_count);
+            _ = try pair_counts.put(cur_pair, pc_ptr);
             var set = std.AutoHashMap(u32, void).init(where.allocator);
             if (count > 0) _ = try set.put(wi, {});
             _ = try where.put(cur_pair, set);
         }
     }
-    warn("len(contiguous_counts) == {}", .{contiguous_counts.items.len});
 }
 
 fn find_maxp(contiguous_counts: *std.ArrayList(PairCount)) ?*PairCount {
-    var max_c: i32 = 0;
     var counts = contiguous_counts.items;
     assert(counts.len > 0);
-    var max_p: *PairCount = &counts[0];
-    for (counts[1..]) |*x| {
-        if (x.count > max_c) {
-            max_c = x.count;
+    var zero = PairCount{
+        .w1 = 0,
+        .w2 = 0,
+        .count = -1,
+    };
+    var max_p: *PairCount = &zero;
+    for (counts) |*x| {
+        if (x.count > max_p.count) {
             max_p = x;
-        } else if (x.count == max_c and x.w1 < max_p.w1) {
-            max_p = x;
-        } else if (x.count == max_c and x.w1 == max_p.w1 and x.w2 < max_p.w2) {
-            max_p = x;
+        } else if (x.count == max_p.count) {
+            if (x.w1 < max_p.w1) {
+                max_p = x;
+            } else if (x.w1 == max_p.w1 and x.w2 < max_p.w2) {
+                max_p = x;
+            }
         }
     }
+    if (max_p.count <= 0) return null;
     return max_p;
 }
 
@@ -475,7 +477,7 @@ pub fn main() anyerror!void {
     defer std.process.argsFree(alloc, args);
     for (args) |arg, i| {
         if (i == 0) continue;
-        warn("{}: {}\n", .{ i, arg });
+        // debug("{}: {}\n", .{ i, arg });
     }
     if (args.len < 3) {
         std.process.exit(1);

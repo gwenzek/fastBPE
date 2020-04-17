@@ -229,7 +229,8 @@ void tokenize_str(const unordered_map<string, uint32_t> &word_count,
 
 using tp = pair<uint32_t, uint32_t>;
 using tps = pair<string, string>;
-using pc = unordered_map<tp, pair<int32_t, tp> *, pair_hash>;
+using ctp = pair<int32_t, tp>;
+using pc = unordered_map<tp, ctp *, pair_hash>;
 
 void count_in_word(
     list<uint32_t> &word, uint32_t wi, uint32_t count, pc &pair_counts,
@@ -266,7 +267,7 @@ void count_in_word(
 void find_maxp(vector<pair<int32_t, tp>> &contiguous_counts, tp &maxp,
                int32_t &max_c) {
   max_c = 0;
-  for (auto &x : contiguous_counts) {
+  for (const ctp &x : contiguous_counts) {
     if (x.first > max_c) {
       max_c = x.first;
       maxp = x.second;
