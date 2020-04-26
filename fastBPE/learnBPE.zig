@@ -9,14 +9,10 @@ const c = @cImport({
     @cInclude("sys/mman.h");
 });
 
-pub var alloc: *Allocator = undefined;
-
 const kMaxPairs: i32 = 1000 * 1000 * 1000;
 const kThreads: i32 = max(1, min(10, int(c.thread.hardware_concurrency())));
 pub const kEndWord = comptime "</w>";
 pub const kTokenDelim = comptime "@@";
-
-pub const kReadOnly = std.fs.File.OpenFlags{ .read = true };
 
 fn strCmp(word1: []const u8, word2: []const u8) bool {
     if (word1.len > word2.len) return !(strCmp(word2, word1));
@@ -94,7 +90,7 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
     } else {
         var realpath_buff: [1024]u8 = undefined;
         const realpath = try std.fs.realpath(fp, &realpath_buff);
-        const file = try std.fs.openFileAbsolute(fp, kReadOnly);
+        const file = try std.fs.openFileAbsolute(fp, .{ .read = true });
 
         warn("Loading vocabulary from {} ...\n", .{fp});
 
@@ -116,13 +112,13 @@ pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
 
 /// Count words in given **tokenized** files.
 /// Output is sorted by decreasing order.
-pub fn getVocab(inputFile1: []const u8, inputFile2: []const u8) !void {
-    var word_count = Vocab.init(alloc);
+pub fn getVocab(inputFile1: []const u8, inputFile2: []const u8, allocator: *Allocator) !void {
+    var word_count = Vocab.init(allocator);
     try readText(inputFile1, &word_count);
     if (inputFile2.len > 0) {
         try readText(inputFile2, &word_count);
     }
-    var word_count_arr = try alloc.alloc(Vocab.KV, word_count.size);
+    var word_count_arr = try allocator.alloc(Vocab.KV, word_count.size);
     var i: u32 = 0;
     var it = word_count.iterator();
     while (it.next()) |wc| {
@@ -241,9 +237,9 @@ const LearnBpeState = struct {
 };
 
 /// Learn BPE from the given files.
-pub fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void {
+pub fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8, allocator: *Allocator) !void {
     // get vocab
-    var word_count = Vocab.init(alloc);
+    var word_count = Vocab.init(allocator);
     try readText(inputFile1, &word_count);
     if (inputFile2.len > 0) {
         try readText(inputFile2, &word_count);
@@ -251,12 +247,12 @@ pub fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !v
 
     // a token is an int, it represents a string
     const reservation = @intCast(u32, 20 * kNPairs);
-    var idx = try WordIndex.init(alloc, reservation);
-    var words = std.ArrayList(std.ArrayList(u32)).init(alloc);
-    var counts = std.ArrayList(i32).init(alloc);
+    var idx = try WordIndex.init(allocator, reservation);
+    var words = std.ArrayList(std.ArrayList(u32)).init(allocator);
+    var counts = std.ArrayList(i32).init(allocator);
 
     try tokenize(&word_count, &idx, &words, &counts);
-    var state = try LearnBpeState.init(alloc, reservation);
+    var state = try LearnBpeState.init(allocator, reservation);
 
     const print = std.io.getStdOut().outStream().print;
     var counts_span = counts.span();
@@ -414,4 +410,3 @@ pub fn str_concat(allocator: *Allocator, a: []const u8, b: []const u8) ![]u8 {
     std.mem.copy(u8, result[a.len..], b);
     return result;
 }
-

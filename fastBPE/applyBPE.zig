@@ -1,36 +1,29 @@
 const std = @import("std");
 const learn = @import("learnBPE.zig");
 const Allocator = std.mem.Allocator;
+const File = std.fs.File;
 const assert = std.debug.assert;
 const warn = std.debug.warn;
 const debug = std.debug.warn;
 
-pub fn applybpe(inputPath: []const u8, codesPath: []const u8, vocabPath: []const u8, allocator: *Allocator) !void {
-    var applyer = try BPEApplyer.init(codesPath, vocabPath, allocator);
+pub fn applybpe(input: File, codes: File, vocab_path: []const u8, allocator: *Allocator) !void {
+    var applyer = try BPEApplyer.init(codes, vocab_path, allocator);
     const buff: comptime usize = 8192;
     var line_buff: [buff]u8 = undefined;
     var result_buff = try std.ArrayList(u8).initCapacity(allocator, 2 * buff);
 
-    const file = if (eqlString(inputPath, "-"))
-        std.io.getStdIn()
-    else
-        std.fs.openFileAbsolute(inputPath, learn.kReadOnly) catch |e| {
-            warn("Error '{}' when opening {}\n", .{ e, inputPath });
-            std.process.exit(1);
-        };
-
-    const file_stream = std.io.bufferedInStream(file.inStream()).inStream();
+    const in_stream = std.io.bufferedInStream(input.inStream()).inStream();
     const print = std.io.getStdOut().outStream().print;
 
-    while (file_stream.readUntilDelimiterOrEof(&line_buff, '\n') catch |err| switch (err) {
+    while (in_stream.readUntilDelimiterOrEof(&line_buff, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
             // Line is longer than buf size, skip it.
             // TODO: treat the buffer as a sentence
-            try file_stream.skipUntilDelimiterOrEof('\n');
+            try in_stream.skipUntilDelimiterOrEof('\n');
             break :blk &line_buff;
         },
         else => {
-            warn("I/O error while reading {}", .{inputPath});
+            warn("I/O error while reading {}", .{input});
             return err;
         },
     }) |line| {
@@ -69,56 +62,22 @@ const BPEApplyer = struct {
     // vocab: learn.Vocab,
     codes: Codes,
     // reversed_codes: std.StringHashMap(WordPair),
-    buffer: [512]u8,
+    word_buffer: [512]u8,
 
-    fn init(codesPath: []const u8, vocabPath: []const u8, allocator: *Allocator) !BPEApplyer {
+    fn init(codes_file: File, vocab_path: []const u8, allocator: *Allocator) !BPEApplyer {
         var applier = BPEApplyer{
+            .codes = try readCodes(codes_file, allocator),
+            // TODO: decide if we keep vocab.
             // .vocab = learn.Vocab.init(allocator),
-            .codes = Codes.init(allocator),
             // .reversed_codes = std.StringHashMap(WordPair).init(allocator),
-            .buffer = undefined,
+            .word_buffer = undefined,
         };
-        var buff = &applier.buffer;
+        var buff = &applier.word_buffer;
         std.mem.copy(u8, buff[buff.len - learn.kEndWord.len ..], learn.kEndWord);
         for (_subwords) |*buffer| {
             buffer.* = try std.ArrayList([]const u8).initCapacity(allocator, 512);
         }
-        // TODO load vocab
-        try applier.readCodes(codesPath);
         return applier;
-    }
-
-    fn readCodes(self: *BPEApplyer, fp: []const u8) !void {
-        var realpath_buff: [1024]u8 = undefined;
-        const realpath = try std.fs.realpath(fp, &realpath_buff);
-        const file = try std.fs.openFileAbsolute(fp, learn.kReadOnly);
-        var codes = &self.codes;
-        var allocator = self.codes.allocator;
-
-        warn("Loading codes from {} ...\n", .{fp});
-        var file_stream = std.io.bufferedInStream(file.inStream()).inStream();
-        var line_buf: [4096]u8 = undefined;
-        while (file_stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
-            error.StreamTooLong => blk: {
-                // Line is longer than buf size, skip it.
-                try file_stream.skipUntilDelimiterOrEof('\n');
-                break :blk &line_buf;
-            },
-            else => |e| return e,
-        }) |line| {
-            var it = std.mem.split(line, " ");
-            // reset subwords
-            const pair = WordPair{ .left = try str_copy(allocator, it.next().?), .right = try str_copy(allocator, it.next().?) };
-            const count = try std.fmt.parseInt(i32, it.next().?, 10);
-            assert(it.next() == null);
-            assert(!self.codes.contains(pair));
-            // TODO copy words
-            _ = try codes.put(pair, @intCast(u32, codes.count()));
-            // string concat = splits[0] + splits[1];
-            // assert(reversed_codes.find(concat) == reversed_codes.end());
-            // reversed_codes[concat] = pair;
-        }
-        warn("Read {} codes from the codes file.\n", .{codes.count()});
     }
 
     fn apply_sentence(self: *BPEApplyer, sentence: []const u8, out: *std.ArrayList(u8)) void {
@@ -137,32 +96,38 @@ const BPEApplyer = struct {
         }
     }
 
+    inline fn add_endword(self: *BPEApplyer, word: []const u8) []const u8 {
+        const off = self.word_buffer.len - learn.kEndWord.len - word.len;
+        var word_with_endword = self.word_buffer[off..];
+        std.mem.copy(u8, word_with_endword, word);
+        return word_with_endword;
+    }
+
     /// Compute BPE for given words. Result is copied to "out".
-    fn apply_word(self: *BPEApplyer, word: []const u8, out: *std.ArrayList(u8)) void {
+    fn apply_word(self: *BPEApplyer, _word: []const u8, out: *std.ArrayList(u8)) void {
+        // reset subwords buffer
         for (_subwords) |*sw| sw.*.items.len = 0;
         var subwords = &_subwords[0];
         var new_subwords = &_subwords[1];
 
-        var word_with_endword = self.buffer[self.buffer.len - learn.kEndWord.len - word.len ..];
-        std.mem.copy(u8, word_with_endword, word);
-
+        const word = self.add_endword(_word);
         // split the word into UTF8 chars
         var last_start: usize = 0;
         // TODO: try std.unicode.Utf8Iterator
-        for (word_with_endword) |char, pos| {
+        for (word) |char, pos| {
             if (pos == 0)
                 continue;
-            if (pos >= word_with_endword.len - learn.kEndWord.len) {
+            if (pos >= word.len - learn.kEndWord.len) {
                 break;
             }
             if ((char & 0xc0) == 0x80) // continuation byte
                 continue;
-            var new_token = word_with_endword[last_start..pos];
+            var new_token = word[last_start..pos];
             subwords.appendAssumeCapacity(new_token);
             last_start = pos;
         }
-        var last_word_len = word_with_endword.len - last_start;
-        subwords.appendAssumeCapacity(word_with_endword[last_start..]);
+        var last_word_len = word.len - last_start;
+        subwords.appendAssumeCapacity(word[last_start..]);
         // debug_subwords("Initial state", subwords.*);
         while (subwords.items.len > 1) {
             // find the best pair
@@ -255,4 +220,37 @@ fn debug_subwords(label: []const u8, subwords: std.ArrayList([]const u8)) void {
         debug("{},", .{sw});
     }
     debug("\n", .{});
+}
+
+// warn("Loading codes from {} ...\n", .{fp});
+
+fn readCodes(file: File, allocator: *Allocator) !Codes {
+    var stream = std.io.bufferedInStream(file.inStream()).inStream();
+    var codes = Codes.init(allocator);
+    var line_buf: [4096]u8 = undefined;
+
+    var l: u32 = 1;
+    while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
+        error.StreamTooLong => blk: {
+            // This looks like a crazy line
+            warn("Skipping line {} which is too long: {}\n", .{ l, line_buf[0..80] });
+            try stream.skipUntilDelimiterOrEof('\n');
+            break :blk &line_buf;
+        },
+        else => |e| return e,
+    }) |line| {
+        var it = std.mem.split(line, " ");
+        // reset subwords
+        const pair = WordPair{ .left = try str_copy(allocator, it.next().?), .right = try str_copy(allocator, it.next().?) };
+        const count = try std.fmt.parseInt(i32, it.next().?, 10);
+        assert(it.next() == null);
+        assert(!codes.contains(pair));
+        _ = try codes.put(pair, @intCast(u32, codes.count()));
+        // string concat = splits[0] + splits[1];
+        // assert(reversed_codes.find(concat) == reversed_codes.end());
+        // reversed_codes[concat] = pair;
+        l +%= 1;
+    }
+    warn("Read {} codes from the codes file.\n", .{codes.count()});
+    return codes;
 }

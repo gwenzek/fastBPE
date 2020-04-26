@@ -1,3 +1,5 @@
+SHELL=`which zsh`
+
 test: small_vocab_diff small_bpe_diff small_apply_diff
 	ls fastBPE/*.zig | xargs -n1 zig test
 
@@ -23,7 +25,7 @@ output/%.zig.bpe.txt: data/% ./zig-cache/bin/fastBPE
 	time ./zig-cache/bin/fastBPE learnbpe 40000 `realpath $<` > $@
 
 output/%.zig_stdin.bpe.txt: data/% ./zig-cache/bin/fastBPE
-	cat $< | ./zig-cache/bin/fastBPE learnbpe 40000 - > $@
+	time cat $< | ./zig-cache/bin/fastBPE learnbpe 40000 - > $@
 
 output/%.cpp.bpe.txt: data/% ./fast
 	time ./fast learnbpe 40000 `realpath $<` > $@
