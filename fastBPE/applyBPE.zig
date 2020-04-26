@@ -5,26 +5,21 @@ const assert = std.debug.assert;
 const warn = std.debug.warn;
 const debug = std.debug.warn;
 
-const c = @cImport({
-    @cInclude("stdio.h");
-});
-
 pub fn applybpe(inputPath: []const u8, codesPath: []const u8, vocabPath: []const u8, allocator: *Allocator) !void {
     var applyer = try BPEApplyer.init(codesPath, vocabPath, allocator);
     const buff: comptime usize = 8192;
     var line_buff: [buff]u8 = undefined;
     var result_buff = try std.ArrayList(u8).initCapacity(allocator, 2 * buff);
 
-    var file: std.fs.File = undefined;
-    if (eqlString(inputPath, "-")) {
-        file = std.io.getStdIn();
-    } else {
-        file = std.fs.openFileAbsolute(inputPath, learn.kReadOnly) catch |e| {
+    const file = if (eqlString(inputPath, "-"))
+        std.io.getStdIn()
+    else
+        std.fs.openFileAbsolute(inputPath, learn.kReadOnly) catch |e| {
             warn("Error '{}' when opening {}\n", .{ e, inputPath });
             std.process.exit(1);
         };
-    }
-    var file_stream = std.io.bufferedInStream(file.inStream()).inStream();
+
+    const file_stream = std.io.bufferedInStream(file.inStream()).inStream();
     const print = std.io.getStdOut().outStream().print;
 
     while (file_stream.readUntilDelimiterOrEof(&line_buff, '\n') catch |err| switch (err) {
@@ -127,16 +122,18 @@ const BPEApplyer = struct {
     }
 
     fn apply_sentence(self: *BPEApplyer, sentence: []const u8, out: *std.ArrayList(u8)) void {
-        debug("Sentence: {}\n", .{sentence});
-        if (sentence.len == 0) {
+        // debug("Sentence: {}\n", .{sentence});
+        if (sentence.len == 0)
             return;
-        }
-        if (sentence.len > 0) @breakpoint();
+
         var it = std.mem.split(sentence, " ");
-        // reset subwords
-        while (it.next()) |word| {
+        var start = true;
+        if (it.next()) |word| {
             self.apply_word(word, out);
+        }
+        while (it.next()) |word| {
             out.appendAssumeCapacity(' ');
+            self.apply_word(word, out);
         }
     }
 
