@@ -6,50 +6,17 @@ const warn = std.debug.warn;
 const debug = std.debug.warn;
 
 const c = @cImport({
-    //   @cInclude("algorithm");
-    //   @cInclude("assert.h");
-    //   @cInclude("errno.h");
-    //   @cInclude("fcntl.h");
-    //   @cInclude("fstream");
-    //   @cInclude("functional");
-    //   @cInclude("iostream");
-    //   @cInclude("list");
-    //   @cInclude("set");
-    @cInclude("stdio.h");
-    // @cInclude("string");
-    // @cInclude("cstring");
     @cInclude("sys/mman.h");
-    // @cInclude("sys/stat.h");
-    // @cInclude("thread");
-    // @cInclude("unistd.h"); // ftruncat
-    // @cInclude("unordered_map");
-    // @cInclude("unordered_set");
-    // @cInclude("vector");
 });
 
-var alloc: *Allocator = undefined;
-// const c_alloc = std.heap.c_allocator;
-// var alloc: *std.mem.Allocator = &std.heap.loggingAllocator(c_alloc, std.io.getStdOut().outStream()).allocator;
+pub var alloc: *Allocator = undefined;
 
-// using namespace std;
-
-const kMaxPairs: i32 = 1000; //* 1000 * 1000;
+const kMaxPairs: i32 = 1000 * 1000 * 1000;
 const kThreads: i32 = max(1, min(10, int(c.thread.hardware_concurrency())));
-const kEndWord = "</w>";
-const kEndWordLength: i32 = 4;
-const kTokenDelim = "@@";
-const kTokenDelimLength: i32 = 2;
+pub const kEndWord = comptime "</w>";
+pub const kTokenDelim = comptime "@@";
 
-const kReadOnly = std.fs.File.OpenFlags{ .read = true };
-
-// pub fn safeOpen(const char *file_path, int flags, mode_t mode = 0) !void {
-//   int fd = open(file_path, flags, mode);
-//   if (fd < 0) {
-//     fprintf(stderr, "Cannot open text file %s\n", file_path);
-//     exit(EXIT_FAILURE);
-//   }
-//   return fd;
-// }
+pub const kReadOnly = std.fs.File.OpenFlags{ .read = true };
 
 fn strCmp(word1: []const u8, word2: []const u8) bool {
     if (word1.len > word2.len) return !(strCmp(word2, word1));
@@ -78,10 +45,8 @@ fn readTextFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
     var w_start: u32 = 0;
     var w_end: u32 = 0;
     var next_char: u8 = ' ';
-    // debug("Read line '{}'\n", .{ buffer });
     while (w_end < buffer.len) {
         next_char = buffer[w_end];
-        // debug("Read char '{}' at ({}/{})\n", .{ next_char, w_end, buffer.len });
         if (next_char != ' ' and next_char != '\n' and w_end + 1 < buffer.len) {
             w_end += 1;
             continue;
@@ -142,6 +107,39 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
 }
 
 pub const Vocab = std.StringHashMap(i32);
+
+pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
+    if (kv1.value == kv2.value)
+        return strCmp(kv1.key, kv2.key);
+    return kv1.value > kv2.value;
+}
+
+/// Count words in given **tokenized** files.
+/// Output is sorted by decreasing order.
+pub fn getVocab(inputFile1: []const u8, inputFile2: []const u8) !void {
+    var word_count = Vocab.init(alloc);
+    try readText(inputFile1, &word_count);
+    if (inputFile2.len > 0) {
+        try readText(inputFile2, &word_count);
+    }
+    var word_count_arr = try alloc.alloc(Vocab.KV, word_count.size);
+    var i: u32 = 0;
+    var it = word_count.iterator();
+    while (it.next()) |wc| {
+        word_count_arr[i] = wc.*;
+        i += 1;
+    }
+
+    assert(i == word_count.size);
+    warn("Word count: {}\n", .{word_count.size});
+    std.sort.sort(Vocab.KV, word_count_arr, hasMoreOccurences);
+
+    const stdout_file = std.io.getStdOut();
+    // print sorted vocab
+    for (word_count_arr) |wc|
+        try stdout_file.outStream().print("{} {}\n", .{ wc.key, wc.value });
+}
+
 pub const WordIndex = struct {
     ids: std.StringHashMap(u32) = undefined,
     tokens: std.ArrayList([]const u8) = undefined,
@@ -160,12 +158,11 @@ pub const WordIndex = struct {
         var new_token = word;
         var need_free = false;
         if (end_of_word) {
-            new_token = try concat(self.ids.allocator, word, kEndWord);
+            new_token = try str_concat(self.ids.allocator, word, kEndWord);
             need_free = true;
         }
         defer {
             if (need_free) {
-                // debug("We should free {}", .{new_token});
                 self.ids.allocator.free(new_token);
             }
         }
@@ -177,55 +174,10 @@ pub const WordIndex = struct {
             _ = self.ids.putAssumeCapacity(new_token, new_id);
             self.tokens.appendAssumeCapacity(new_token);
             need_free = false;
-            // debug("'{}' -> id: {}, ", .{ new_token, new_id });
             return new_id;
         }
     }
 };
-
-pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
-    if (kv1.value == kv2.value)
-        return strCmp(kv1.key, kv2.key);
-    return kv1.value > kv2.value;
-}
-
-fn getVocab(inputFile1: []const u8, inputFile2: []const u8) !void {
-    // get vocab
-    // @compileLog(@sizeOf(usize), @sizeOf(u64));
-    var word_count = Vocab.init(alloc);
-    try readText(inputFile1, &word_count);
-    if (inputFile2.len > 0) {
-        try readText(inputFile2, &word_count);
-    }
-    var word_count_arr = try alloc.alloc(Vocab.KV, word_count.size);
-    var i: u32 = 0;
-    var it = word_count.iterator();
-    while (it.next()) |wc| {
-        word_count_arr[i] = wc.*;
-        // debug("! {} {}\n", .{ word_count_arr[i].key, word_count_arr[i].value });
-        i += 1;
-    }
-
-    assert(i == word_count.size);
-    warn("Word count: {}\n", .{word_count.size});
-    std.sort.sort(Vocab.KV, word_count_arr, hasMoreOccurences);
-
-    const stdout_file = std.io.getStdOut();
-    // print sorted vocab
-    for (word_count_arr) |wc|
-        try stdout_file.outStream().print("{} {}\n", .{ wc.key, wc.value });
-}
-
-fn u32LessThan(x: u32, y: u32) bool {
-    return x < y;
-}
-
-fn concat(allocator: *Allocator, a: []const u8, b: []const u8) ![]u8 {
-    const result = try allocator.alloc(u8, a.len + b.len);
-    std.mem.copy(u8, result, a);
-    std.mem.copy(u8, result[a.len..], b);
-    return result;
-}
 
 const WordPair = struct { w1: u32 = 0, w2: u32 = 0 };
 const PairCount = struct {
@@ -269,7 +221,6 @@ const LearnBpeState = struct {
             // assert(kv.value.count + v >= 0);
             const old_count = kv.value.count;
             kv.value.count += v;
-            // debug("inc_count: update {} {} {}={}+{}, ", .{ kv.value.w1, kv.value.w2, kv.value.count, old_count, v });
             if (v > 0) {
                 var words = &self.where.get(pair).?.value;
                 _ = try words.put(wid, {});
@@ -279,7 +230,6 @@ const LearnBpeState = struct {
             // can't decrement from inexisting pair.
             assert(v > 0);
             const pc = PairCount.init(pair, v);
-            // debug("inc_count: append {} {} {}, ", .{ pc.w1, pc.w2, pc.count });
             var pc_ptr: *PairCount = self.contiguous_counts.addOneAssumeCapacity();
             pc_ptr.* = pc;
             _ = self.pair_counts.putAssumeCapacity(pair, pc_ptr);
@@ -290,9 +240,8 @@ const LearnBpeState = struct {
     }
 };
 
-const NOT_WORD: u32 = -1;
-
-fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void {
+/// Learn BPE from the given files.
+pub fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void {
     // get vocab
     var word_count = Vocab.init(alloc);
     try readText(inputFile1, &word_count);
@@ -306,7 +255,6 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
     var words = std.ArrayList(std.ArrayList(u32)).init(alloc);
     var counts = std.ArrayList(i32).init(alloc);
 
-    // debug("\nstarting tokenize\n", .{});
     try tokenize(&word_count, &idx, &words, &counts);
     var state = try LearnBpeState.init(alloc, reservation);
 
@@ -314,21 +262,17 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
     var counts_span = counts.span();
     const all_words = words.span();
 
-    // debug("\nstarting count_in_word\n", .{});
     for (all_words) |word, wi| {
         try count_in_word(word, @intCast(u32, wi), counts_span[wi], &state);
     }
-    // debug("\nstarting max_p\n", .{});
     var i: usize = 0;
     while (i < kNPairs) : (i += 1) {
         var max_p = find_maxp(&state.contiguous_counts) orelse break;
         // create new token for pair. replace
         var tokens = &idx.tokens.items;
-        // debug("\nmax_p {} {} {}, ", .{ max_p.w1, max_p.w2, max_p.count });
-        var new_token = try concat(idx.tokens.allocator, tokens.*[max_p.w1], tokens.*[max_p.w2]);
+        var new_token = try str_concat(idx.tokens.allocator, tokens.*[max_p.w1], tokens.*[max_p.w2]);
         _ = try print("{} {} {}\n", .{ tokens.*[max_p.w1], tokens.*[max_p.w2], max_p.count });
         var new_token_id = try idx.getOrAdd(new_token, false);
-        // debug("new_token_id {}, ", .{new_token_id});
 
         var where_it = state.where.get(WordPair{ .w1 = max_p.w1, .w2 = max_p.w2 }).?.value.iterator();
         while (where_it.next()) |wi| {
@@ -348,7 +292,6 @@ fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8) !void 
                     continue;
 
                 // we've found the pair
-
                 // change count for word before us.
                 if (j > 1) {
                     const w0 = full_word.items[j - 2];
@@ -428,13 +371,10 @@ fn count_in_word(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpe
             } else {
                 _ = w.?.value.remove(wi);
             }
-            // debug("update {} {} {}={}+{}, ", .{ pair_count.value.w1, pair_count.value.w2, pair_count.value.count, old_cont, count });
         } else {
             const pair_count = PairCount.init(cur_pair, count);
             var pc_ptr: *PairCount = contiguous_counts.addOneAssumeCapacity();
             pc_ptr.* = pair_count;
-            // debug("append {} {} {}, ", .{ pair_count.w1, pair_count.w2, pair_count.count });
-            // debug("len(contiguous_counts) == {}", .{contiguous_counts.items.len});
 
             _ = try pair_counts.put(cur_pair, pc_ptr);
             var set = std.AutoHashMap(u32, void).init(where.allocator);
@@ -468,26 +408,10 @@ fn find_maxp(contiguous_counts: *std.ArrayList(PairCount)) ?*PairCount {
     return max_p;
 }
 
-pub fn main() anyerror!void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    alloc = &arena.allocator;
-
-    var args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
-    for (args) |arg, i| {
-        if (i == 0) continue;
-        // debug("{}: {}\n", .{ i, arg });
-    }
-    if (args.len < 3) {
-        std.process.exit(1);
-    }
-    if (std.ascii.eqlIgnoreCase(args[1], "getvocab")) {
-        try getVocab(args[2], "");
-    } else if (std.ascii.eqlIgnoreCase(args[1], "learnbpe")) {
-        const n_bpe = try std.fmt.parseInt(i32, args[2], 10);
-        try learnbpe(n_bpe, args[3], "");
-    } else {
-        std.process.exit(1);
-    }
+pub fn str_concat(allocator: *Allocator, a: []const u8, b: []const u8) ![]u8 {
+    const result = try allocator.alloc(u8, a.len + b.len);
+    std.mem.copy(u8, result, a);
+    std.mem.copy(u8, result[a.len..], b);
+    return result;
 }
+

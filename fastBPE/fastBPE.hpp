@@ -332,6 +332,9 @@ void learnbpe(const uint32_t kNPairs, const char *inputFile1,
   }
   find_maxp(contiguous_counts, max_p, max_c);
   for (size_t i = 0; i < kNPairs; i++) {
+    if (max_c == 0) {
+      break;
+    }
     // create new token for pair. replace
     auto new_token = int_to_token[max_p.first] + int_to_token[max_p.second];
     cout << int_to_token[max_p.first] << " " << int_to_token[max_p.second]
