@@ -71,6 +71,10 @@ perf_apply: clean
 	zig build -Drelease-fast=true
 	make big_apply_diff
 
+test_zig_python:
+	zig build-lib fastBPE/applyBPE.zig -dynamic
+	python fastBPE/test_zig.py
+
 clean:
 	[ -f ./fast ] ; rm ./fast
 	[ -d ./zig-cache ] ; rm -r ./zig-cache

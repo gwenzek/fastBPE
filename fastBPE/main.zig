@@ -3,23 +3,11 @@ const learn = @import("learnBPE.zig");
 const apply = @import("applyBPE.zig");
 
 const warn = std.debug.warn;
+const resolve = learn.resolve;
 
 fn get_args(args: [][]const u8, n: usize) []const u8 {
     if (n >= args.len) return "";
     return args[n];
-}
-
-fn resolve(file_path: []const u8) std.fs.File {
-    // var realpath_buff: [1024]u8 = undefined;
-    // const realpath = try std.fs.realpath(fp, &realpath_buff);
-    if (std.mem.eql(u8, file_path, "-")) {
-        return std.io.getStdIn();
-    }
-
-    return std.fs.openFileAbsolute(file_path, .{ .read = true }) catch |e| {
-        warn("Error '{}' when opening {}\n", .{ e, file_path });
-        std.process.exit(1);
-    };
 }
 
 pub fn main() anyerror!void {

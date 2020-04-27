@@ -410,3 +410,16 @@ pub fn str_concat(allocator: *Allocator, a: []const u8, b: []const u8) ![]u8 {
     std.mem.copy(u8, result[a.len..], b);
     return result;
 }
+
+pub fn resolve(file_path: []const u8) std.fs.File {
+    // var realpath_buff: [1024]u8 = undefined;
+    // const realpath = try std.fs.realpath(fp, &realpath_buff);
+    if (std.mem.eql(u8, file_path, "-")) {
+        return std.io.getStdIn();
+    }
+
+    return std.fs.openFileAbsolute(file_path, .{ .read = true }) catch |e| {
+        warn("Error '{}' when opening {}\n", .{ e, file_path });
+        std.process.exit(1);
+    };
+}

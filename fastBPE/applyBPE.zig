@@ -5,9 +5,10 @@ const File = std.fs.File;
 const assert = std.debug.assert;
 const warn = std.debug.warn;
 const debug = std.debug.warn;
+const OutOfMemory = std.mem.Allocator.Error;
 
 pub fn applybpe(input: File, codes: File, vocab_path: []const u8, allocator: *Allocator) !void {
-    var applyer = try BPEApplyer.init(codes, vocab_path, allocator);
+    var applyer = try BPEApplyer.fromFile(codes, vocab_path, allocator);
     const buff: comptime usize = 8192;
     var line_buff: [buff]u8 = undefined;
     var result_buff = try std.ArrayList(u8).initCapacity(allocator, 2 * buff);
@@ -27,8 +28,7 @@ pub fn applybpe(input: File, codes: File, vocab_path: []const u8, allocator: *Al
             return err;
         },
     }) |line| {
-        applyer.apply_sentence(line, &result_buff);
-        try print("{}\n", .{result_buff.span()});
+        try print("{}\n", .{applyer.applySentence(line, &result_buff)});
         // doesn't change underlying memory, but reset the write pointer.
         result_buff.items.len = 0;
     }
@@ -52,63 +52,112 @@ const WordPair = struct {
     }
 };
 
-threadlocal var _subwords = [_]std.ArrayList([]const u8){
-    undefined,
-    undefined,
-};
+export fn py_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
+    const allocator = std.heap.c_allocator;
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var realpath = std.os.realpathZ(codes_file, &buf) catch |err| {
+        warn("Failed to resolve code file '{}': {}\n", .{ codes_file, err });
+        return null;
+    };
+    const file = std.mem.dupe(allocator, u8, realpath) catch |err| {
+        warn("Failed to copy filename '{}': {}\n", .{ realpath, err });
+        return null;
+    };
+    defer allocator.free(file);
+    const handle = std.fs.openFileAbsolute(file, .{ .read = true }) catch |e| {
+        warn("Error '{}' when opening {}\n", .{ e, file });
+        return null;
+    };
+    const codes = readCodes(handle, allocator) catch |err| {
+        warn("Error when reading codes from {}: {}\n", .{ file, err });
+        return null;
+    };
+    var applier = BPEApplyer.init(codes, allocator) catch |err| {
+        warn("Not enough memory: {}\n", .{err});
+        return null;
+    };
+    var heap_bpe: *BPEApplyer = allocator.create(BPEApplyer) catch |err| {
+        warn("Not enough memory: {}\n", .{err});
+        return null;
+    };
+    heap_bpe.* = applier;
+    return heap_bpe;
+}
+
+export fn py_apply_sentence(bpe: *BPEApplyer, sentence: [*:0]u8, sentence_len: usize, out: [*]u8) usize {
+    warn("py_apply_sentence: sentence='{}', buffer='{}'\n", .{ sentence, out[0..10] });
+    const allocator = bpe.codes.allocator;
+    var output = std.ArrayList(u8).initCapacity(std.heap.c_allocator, 4096) catch return 0;
+    var sent = sentence[0..sentence_len];
+    var res = bpe.applySentence(sent, &output);
+    std.mem.copy(u8, out[0..res.len], res);
+    return res.len;
+}
 
 const Codes = std.HashMap(WordPair, u32, WordPair.hash, WordPair.eql);
 const BPEApplyer = struct {
-    // vocab: learn.Vocab,
+    /// Class to apply BPE to text.
+    /// Pass by pointer: this struct is very wide because it contains buffers for the conversion.
+    /// Not thread safe. Several applier can safely share the same codes.
     codes: Codes,
+    // TODO: decide if we keep vocab.
+    // vocab: learn.Vocab,
     // reversed_codes: std.StringHashMap(WordPair),
-    word_buffer: [512]u8,
+    _word_buffer: [512]u8,
+    _subwords: [2]std.ArrayList([]const u8),
 
-    fn init(codes_file: File, vocab_path: []const u8, allocator: *Allocator) !BPEApplyer {
+    fn init(codes: Codes, allocator: *Allocator) OutOfMemory!BPEApplyer {
         var applier = BPEApplyer{
-            .codes = try readCodes(codes_file, allocator),
-            // TODO: decide if we keep vocab.
-            // .vocab = learn.Vocab.init(allocator),
-            // .reversed_codes = std.StringHashMap(WordPair).init(allocator),
-            .word_buffer = undefined,
+            .codes = codes,
+            ._word_buffer = undefined,
+            ._subwords = [_]std.ArrayList([]const u8){
+                undefined,
+            } ** 2,
         };
-        var buff = &applier.word_buffer;
+        var buff = &applier._word_buffer;
         std.mem.copy(u8, buff[buff.len - learn.kEndWord.len ..], learn.kEndWord);
-        for (_subwords) |*buffer| {
+        for (applier._subwords) |*buffer| {
             buffer.* = try std.ArrayList([]const u8).initCapacity(allocator, 512);
         }
         return applier;
     }
 
-    fn apply_sentence(self: *BPEApplyer, sentence: []const u8, out: *std.ArrayList(u8)) void {
+    fn fromFile(codes_file: File, vocab_path: []const u8, allocator: *Allocator) !BPEApplyer {
+        var codes = try readCodes(codes_file, allocator);
+        return try BPEApplyer.init(codes, allocator);
+    }
+
+    fn applySentence(self: *BPEApplyer, sentence: []const u8, out: *std.ArrayList(u8)) []const u8 {
         // debug("Sentence: {}\n", .{sentence});
+        const start = out.items.len;
         if (sentence.len == 0)
-            return;
+            return out.items[start..];
 
         var it = std.mem.split(sentence, " ");
-        var start = true;
         if (it.next()) |word| {
-            self.apply_word(word, out);
+            _ = self.applyWord(word, out);
         }
         while (it.next()) |word| {
             out.appendAssumeCapacity(' ');
-            self.apply_word(word, out);
+            _ = self.applyWord(word, out);
         }
+        return out.items[start..];
     }
 
     inline fn add_endword(self: *BPEApplyer, word: []const u8) []const u8 {
-        const off = self.word_buffer.len - learn.kEndWord.len - word.len;
-        var word_with_endword = self.word_buffer[off..];
+        const off = self._word_buffer.len - learn.kEndWord.len - word.len;
+        var word_with_endword = self._word_buffer[off..];
         std.mem.copy(u8, word_with_endword, word);
         return word_with_endword;
     }
 
     /// Compute BPE for given words. Result is copied to "out".
-    fn apply_word(self: *BPEApplyer, _word: []const u8, out: *std.ArrayList(u8)) void {
+    fn applyWord(self: *BPEApplyer, _word: []const u8, out: *std.ArrayList(u8)) []const u8 {
         // reset subwords buffer
-        for (_subwords) |*sw| sw.*.items.len = 0;
-        var subwords = &_subwords[0];
-        var new_subwords = &_subwords[1];
+        for (self._subwords) |*sw| sw.*.items.len = 0;
+        var subwords = &self._subwords[0];
+        var new_subwords = &self._subwords[1];
+        var start = out.items.len;
 
         const word = self.add_endword(_word);
         // split the word into UTF8 chars
@@ -134,7 +183,7 @@ const BPEApplyer = struct {
             var best_pair_pos: i32 = -1;
             var best_pair: Codes.KV = undefined;
             for (subwords.items[0 .. subwords.items.len - 1]) |sw, i| {
-                if (self.codes.get(WordPair{ .left = sw, .right = subwords.items[i + 1] })) |pair| {
+                if (self.codes.get(.{ .left = sw, .right = subwords.items[i + 1] })) |pair| {
                     var pair_rank = pair.value;
                     if (pair_rank >= 0 and (best_pair_pos == -1 or best_pair.value > pair_rank)) {
                         best_pair = pair.*;
@@ -197,6 +246,20 @@ const BPEApplyer = struct {
             appendSliceAssumeCapacity(out, learn.kTokenDelim);
             out.appendAssumeCapacity(' ');
         }
+        return out.items[start..];
+    }
+
+    fn deinit(self: *BPEApplyer) void {
+        self.codes.deinit();
+        for (self._subwords) |*buffer| {
+            buffer.deinit();
+        }
+    }
+
+    fn addPairOrCrash(self: *BPEApplyer, left: []const u8, right: []const u8) void {
+        const pair = WordPair{ .left = left, .right = right };
+        assert(!self.codes.contains(pair));
+        _ = self.codes.put(pair, @intCast(u32, self.codes.count())) catch unreachable;
     }
 };
 
@@ -253,4 +316,52 @@ fn readCodes(file: File, allocator: *Allocator) !Codes {
     }
     warn("Read {} codes from the codes file.\n", .{codes.count()});
     return codes;
+}
+
+fn assertEqlString(message: []const u8, actual: []const u8, expected: []const u8) void {
+    const eq = eqlString(actual, expected);
+    if (eq) return;
+    warn("\n - {}: received '{}', expected: '{}'\n", .{ message, actual, expected });
+    if (actual.len != expected.len) {
+        warn("    received len {}, expected len {}\n", .{ actual.len, expected.len });
+        assert(false);
+    }
+    for (expected) |char, i| {
+        const actual_char = actual[i];
+        if (actual_char != char) {
+            warn("    char mismatch at index {}: received '{}', expected '{}", .{ i, actual[i .. i + 1], expected[i .. i + 1] });
+        }
+    }
+    assert(eq);
+}
+
+test "apply word" {
+    var bpe = try BPEApplyer.init(std.testing.allocator);
+    defer bpe.deinit();
+    var out = try std.ArrayList(u8).initCapacity(std.testing.allocator, 512);
+    defer out.deinit();
+
+    assertEqlString(
+        "codes=[]",
+        bpe.applyWord("hello", &out),
+        "h@@ e@@ l@@ l@@ o",
+    );
+    bpe.addPairOrCrash("h", "e");
+    assertEqlString(
+        "codes=[he]",
+        bpe.applyWord("hello", &out),
+        "he@@ l@@ l@@ o",
+    );
+    bpe.addPairOrCrash("l", "l");
+    assertEqlString(
+        "codes=[he, ll]",
+        bpe.applyWord("hello", &out),
+        "he@@ ll@@ o",
+    );
+    bpe.addPairOrCrash("ll", "o</w>");
+    assertEqlString(
+        "codes=[he, ll, llo]",
+        bpe.applyWord("hello", &out),
+        "he@@ llo",
+    );
 }
