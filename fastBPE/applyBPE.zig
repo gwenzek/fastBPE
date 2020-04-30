@@ -84,7 +84,7 @@ export fn py_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
     return heap_bpe;
 }
 
-export fn py_apply_sentence(bpe: *BPEApplyer, sentence: [*:0]u8, sentence_len: usize, out: [*]u8) usize {
+export fn py_apply_sentence(bpe: *BPEApplyer, sentence: [*]const u8, sentence_len: usize, out: [*]u8) usize {
     warn("py_apply_sentence: sentence='{}', buffer='{}'\n", .{ sentence, out[0..10] });
     const allocator = bpe.codes.allocator;
     var output = std.ArrayList(u8).initCapacity(std.heap.c_allocator, 4096) catch return 0;

@@ -5,8 +5,8 @@ import ctypes
 zig = ctypes.CDLL("./libapplyBPE.0.0.0.dylib")
 
 
-def e(s):
-  return ctypes.create_string_buffer((str(s) + "\0").encode("utf8"))
+def encode(s):
+    return ctypes.create_string_buffer((str(s) + "\0").encode("utf8"))
 
 
 zig.py_bpe.argtypes = [ctypes.c_char_p]
@@ -21,17 +21,23 @@ zig.py_apply_sentence.argtypes = [
 zig.py_apply_sentence.argtypes
 
 
-def main():
-  root = Path(__file__).parent.parent
-  sample = (root / "output/sample.txt.cpp.bpe.txt").resolve()
-  bpe = zig.py_bpe(e(sample))
-
-  buff = e("_" * 1000)
-  s = e("helllo worlld")
-  print(s.value)
-  i = zig.py_apply_sentence(bpe, s, len(s.value), buff)
-  print(buff.value[:i])
+_buff = ctypes.create_string_buffer(b"_" * 1024)
 
 
-if __name__ == '__main__':
-  main()
+def bpe_sent(bpe, sentence: bytes):
+    i = zig.py_apply_sentence(bpe, sentence, len(sentence), _buff)
+    return bytes(_buff.value[:i])
+
+
+def test_zig_bpe():
+    root = Path(__file__).parent.parent
+    sample = (root / "output/sample.txt.cpp.bpe.txt").resolve()
+    bpe = zig.py_bpe(encode(sample))
+
+    assert bpe_sent(bpe, b"helllo worlld") == b"h@@ e@@ ll@@ l@@ o wo@@ r@@ ll@@ d"
+    assert bpe_sent(bpe, b"llohe world") == b"llohe world"
+    assert bpe_sent(bpe, b"lle") == b"ll@@ e"
+
+
+if __name__ == "__main__":
+    test_zig_bpe()
