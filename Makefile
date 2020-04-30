@@ -3,13 +3,14 @@ SHELL=`which zsh`
 test: small_vocab_diff small_bpe_diff small_apply_diff
 	ls fastBPE/*.zig | xargs -n1 zig test
 
-build: ./zig-cache/bin/fastBPE ./fast
+build: ./zig-cache/bin/fastBPE bin_cpp/fastBPE
 
 ./zig-cache/bin/fastBPE: fastBPE/*.zig
 	mkdir -p output
 	zig build
 
-./fast: fastBPE/fastBPE.hpp fastBPE/main.cc
+bin_cpp/fastBPE: fastBPE/fastBPE.hpp fastBPE/main.cc
+	mkdir -p bin_cpp
 	g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o $@
 
 output/%.zig.vocab.txt: data/% ./zig-cache/bin/fastBPE
@@ -18,8 +19,8 @@ output/%.zig.vocab.txt: data/% ./zig-cache/bin/fastBPE
 output/%.zig_stdin.vocab.txt: data/% ./zig-cache/bin/fastBPE
 	cat $< | ./zig-cache/bin/fastBPE getvocab - > $@
 
-output/%.cpp.vocab.txt: data/% ./fast
-	./fast getvocab `realpath $<` > $@
+output/%.cpp.vocab.txt: data/% bin_cpp/fastBPE
+	bin_cpp/fastBPE getvocab `realpath $<` > $@
 
 output/%.zig.bpe.txt: data/% ./zig-cache/bin/fastBPE
 	time ./zig-cache/bin/fastBPE learnbpe 40000 `realpath $<` > $@
@@ -27,15 +28,15 @@ output/%.zig.bpe.txt: data/% ./zig-cache/bin/fastBPE
 output/%.zig_stdin.bpe.txt: data/% ./zig-cache/bin/fastBPE
 	time cat $< | ./zig-cache/bin/fastBPE learnbpe 40000 - > $@
 
-output/%.cpp.bpe.txt: data/% ./fast
-	time ./fast learnbpe 40000 `realpath $<` > $@
+output/%.cpp.bpe.txt: data/% bin_cpp/fastBPE
+	time bin_cpp/fastBPE learnbpe 40000 `realpath $<` > $@
 
 output/%.zig.apply.txt: data/% output/%.cpp.bpe.txt ./zig-cache/bin/fastBPE
 	# Reuse codes learnt from C++ to limit diffs to the 'apply' implementation
 	./zig-cache/bin/fastBPE applybpe `realpath $<` `realpath $(word 2,$^)` > $@
 
-output/%.cpp.apply.txt: data/% output/%.cpp.bpe.txt ./fast
-	time ./fast applybpe $@ $< $(word 2,$^)
+output/%.cpp.apply.txt: data/% output/%.cpp.bpe.txt bin_cpp/fastBPE
+	time bin_cpp/fastBPE applybpe $@ $< $(word 2,$^)
 
 small_vocab_diff: output/readme.cpp.vocab.txt output/readme.zig.vocab.txt output/readme.zig_stdin.vocab.txt
 	diff -W80 $< output/readme.zig.vocab.txt
@@ -71,10 +72,10 @@ perf_apply: clean
 	zig build -Drelease-fast=true
 	make big_apply_diff
 
-test_zig_python:
+test_zig_python: output/sample.txt.cpp.bpe.txt
 	zig build-lib fastBPE/applyBPE.zig -dynamic
-	python fastBPE/test_zig.py
+	pytest fastBPE/test_zig.py
 
 clean:
-	[ -f ./fast ] ; rm ./fast
+	[ -f bin_cpp/fastBPE ] ; rm bin_cpp/fastBPE
 	[ -d ./zig-cache ] ; rm -r ./zig-cache

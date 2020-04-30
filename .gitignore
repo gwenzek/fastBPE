@@ -1,7 +1,10 @@
 /data/
 /output/
 /zig-cache/
-/fast
+/bin_cpp
 
 *.o
 *.dylib
+
+# python
+__pycache__/
