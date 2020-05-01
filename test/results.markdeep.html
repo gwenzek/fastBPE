@@ -1,0 +1,91 @@
+<meta charset="utf-8">
+
+                            **Comparison of BPE implementation**
+
+# Goal
+
+I rewrote the fastBPE from C++ to Zig.
+The main goal was to actually learn Zig on a small project performance oriented.
+I'm also interested in the performance impact of changing language.
+C++ claims to be as fast as C while Zig claims to be faster than C thanks to better defaults.
+
+# Zig implementation
+
+The first implementation was very much a translation of the C++ implementation, as I wanted to keep things comparable.
+The main difference is memory allocation.
+In Zig memory implementation is more explicit than in C++ and a bit more cumbersome.
+I decided to make the Zig version prealloacate memory and to not allocate during processing.
+The C++ implementation also do a lot of small string concatenations which was replaced by array slicing in Zig.
+
+# Benchmark
+
+I evaluated the "apply" part of the algorithm starting from learned codes.
+The corpus used as input is 800k words long and is extracted from the French Wikipedia.
+All implementation produce the exact same files.
+
+| Implementation | Time  | Word / s |
+|:---------------|:------|:---------|
+| C++            | 0.88s | 909k s   |
+| Zig            | 0.61s | 1311k s  |
+
+
+# Python wrapper
+
+Another thing I wanted to evaluate with this project is to compare the different way of writing C extension for Python.
+
+
+There are 3 main alternatives: Cython, pybind11, cffi.
+Here is a table comparing them summarizing from Stephan [Behnel] blog
+
+|   Tool   | API language | Static  | Fast |
+|:--------:|:-------------|:--------|:-----|
+|  Cython  | Python-like  | static  | fast |
+| pybind11 | C++          | static  | fast |
+|   cffi   | Python       | dynamic | slow |
+|   ctypes | Python       | dynamic | slow |
+
+
+[#Behnel]: [Cython, pybind11, cffi – which tool should you choose?](http://blog.behnel.de/posts/cython-pybind11-cffi-which-tool-to-choose.html) - Stefan Behnel
+
+## Python Wrapper Benchmark
+
+I was curious about the performance impact of the chosen python wrapper and the general overhead.
+The python code is pretty minimal and called Python functions are mostly direct C calls.
+So I was expecting the Python impact to be negligible.
+
+```py
+import fastBPE, sys, time
+
+def apply(file: str, codes: str) -> None:
+    start = time.time()
+    f = sys.stdin if file == "-" else open(file, mode="r")
+    bpe = fastBPE.fastBPE(codes, "")
+    for i, line in enumerate(f):
+        s = bpe.apply([line[:-1]])[0]
+        print(s)
+
+    delay = time.time() - start
+    print(f"Computed BPE on {i} sentences in {delay:.2f}s, using cython wrapper around cpp implementation", file=sys.stderr)
+```
+
+
+| Implementation |  Time | Word / s | Overhead |
+|:---------------|------:|---------:|:---------|
+| C++            | 0.88s |   909k/s | 1× (ref) |
+| C++ - Cython   | 2.74s |   292k/s | 3×       |
+| Zig            | 0.61s |  1311k/s | 1× (ref) |
+| Zig - Ctypes   | 2.77s |   289k/s | 4.5×     |
+
+!!! warning
+    The Cython C++ implementation is doing bytes -> str -> bytes -> str -> bytes, while Zig wrapper stays in bytes the whole time.
+
+
+!!! TODO
+    use `py-spy --native` to benchmark the wrappers: https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/
+
+
+<!-- Markdeep footer -->
+    <style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style>
+    <script src="markdeep.min.js"></script>
+    <script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script>
+    <script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>

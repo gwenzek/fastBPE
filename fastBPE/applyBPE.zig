@@ -52,7 +52,7 @@ const WordPair = struct {
     }
 };
 
-export fn py_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
+export fn ctypes_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
     const allocator = std.heap.c_allocator;
     var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     var realpath = std.os.realpathZ(codes_file, &buf) catch |err| {
@@ -84,13 +84,13 @@ export fn py_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
     return heap_bpe;
 }
 
-export fn py_apply_sentence(bpe: *BPEApplyer, sentence: [*]const u8, sentence_len: usize, out: [*]u8) usize {
-    warn("py_apply_sentence: sentence='{}', buffer='{}'\n", .{ sentence, out[0..10] });
-    const allocator = bpe.codes.allocator;
-    var output = std.ArrayList(u8).initCapacity(std.heap.c_allocator, 4096) catch return 0;
-    var sent = sentence[0..sentence_len];
-    var res = bpe.applySentence(sent, &output);
-    std.mem.copy(u8, out[0..res.len], res);
+var ctypes_output_buffer = std.ArrayList(u8).init(std.heap.c_allocator);
+
+export fn ctypes_apply_sentence(bpe: *BPEApplyer, sentence: [*]const u8, sentence_len: usize, out: [*]u8) usize {
+    ctypes_output_buffer.capacity = 4096;
+    ctypes_output_buffer.items.len = 0;
+    ctypes_output_buffer.items.ptr = out;
+    var res = bpe.applySentence(sentence[0..sentence_len], &ctypes_output_buffer);
     return res.len;
 }
 
