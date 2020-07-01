@@ -23,10 +23,24 @@ I evaluated the "apply" part of the algorithm starting from learned codes.
 The corpus used as input is 800k words long and is extracted from the French Wikipedia.
 All implementation produce the exact same files.
 
+For C++ there are two implementations:
+* `apply` takes a whole file, load it memory and treat it with 4 threads.
+* `apply_stream` read from stdin and process lines one by one in a single thread.
+
+I'm more interested by the second version because they are different use case where I won't have the file on disk:
+* The text is stored in compressed in a .gz file
+* The text on the disk is not tokenized and is piped through a tokenizer before BPE.
+* I don't want to preprocess 100Gb of text before starting working on the next step.
+
+The Zig implementation has only the stream, single core implemented yet.
+So unless mentioned implementation refers to the stream mode.
+`C++ (batch)` refers to the implementation with in memory file and 4 threads.
+
 | Implementation | Time  | Word / s |
-|:---------------|:------|:---------|
-| C++            | 0.88s | 909k s   |
-| Zig            | 0.61s | 1311k s  |
+|:---------------|------:|---------:|
+| C++ (batch)    | 0.47s | 1702k/s  |
+| C++            | 2.92s |  274k/s  |
+| Zig            | 0.97s |  825k/s  |
 
 
 # Python wrapper
@@ -50,7 +64,8 @@ Here is a table comparing them summarizing from Stephan [Behnel] blog
 ## Python Wrapper Benchmark
 
 I was curious about the performance impact of the chosen python wrapper and the general overhead.
-The python code is pretty minimal and called Python functions are mostly direct C calls.
+The python code is pretty minimal and called Python functions are mostly direct C calls,
+with some string encoding.
 So I was expecting the Python impact to be negligible.
 
 ```py
@@ -71,17 +86,23 @@ def apply(file: str, codes: str) -> None:
 
 | Implementation |  Time | Word / s | Overhead |
 |:---------------|------:|---------:|:---------|
-| C++            | 0.88s |   909k/s | 1× (ref) |
-| C++ - Cython   | 2.74s |   292k/s | 3×       |
-| Zig            | 0.61s |  1311k/s | 1× (ref) |
-| Zig - Ctypes   | 2.77s |   289k/s | 4.5×     |
+| C++            | 2.92s |    274/s | 1× (ref) |
+| C++ - Cython   | 2.79s |    287/s | 0.95×    |
+|----------------|-------|----------|----------|
+| Zig            | 1.06s |    755/s | 1× (ref) |
+| Zig - Ctypes   | 1.07s |    748/s | 1.01×    |
 
-!!! warning
-    The Cython C++ implementation is doing bytes -> str -> bytes -> str -> bytes, while Zig wrapper stays in bytes the whole time.
+I'm not sure why the Cython implementation is faster than C++,
+The exact number varies across runs but I found the small speed up to be constistent.
+Maybe it's due to the Python IO being faster than `stdio.h` ? I don't know ^^
 
+## Flame graph
 
-!!! TODO
-    use `py-spy --native` to benchmark the wrappers: https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/
+I used [py-spy](https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/) to benchmark the two python wrappers.
+
+![C++ - Cython](./cpp_cython.svg)
+<!-- TODO: regenerate zig flame graph -->
+<!-- ![Zig - Ctypes](./zig_ctypes.svg) -->
 
 
 <!-- Markdeep footer -->
