@@ -84,9 +84,11 @@ export fn ctypes_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
     return heap_bpe;
 }
 
-var ctypes_output_buffer = std.ArrayList(u8).init(std.heap.c_allocator);
+var ctypes_output_buffer: std.ArrayList(u8) = undefined;
 
 export fn ctypes_apply_sentence(bpe: *BPEApplyer, sentence: [*]const u8, sentence_len: usize, out: [*]u8) usize {
+    // Ensure the sentence isn't too big for the buffer.
+    assert(sentence_len < 2048);
     ctypes_output_buffer.capacity = 4096;
     ctypes_output_buffer.items.len = 0;
     ctypes_output_buffer.items.ptr = out;
@@ -102,7 +104,6 @@ const BPEApplyer = struct {
     codes: Codes,
     // TODO: decide if we keep vocab.
     // vocab: learn.Vocab,
-    // reversed_codes: std.StringHashMap(WordPair),
     _word_buffer: [512]u8,
     _subwords: [2]std.ArrayList([]const u8),
 
@@ -336,9 +337,11 @@ fn assertEqlString(message: []const u8, actual: []const u8, expected: []const u8
 }
 
 test "apply word" {
-    var bpe = try BPEApplyer.init(std.testing.allocator);
+    var allocator = std.testing.allocator;
+    var codes = Codes.initCapacity(allocator, 512);
+    var bpe = try BPEApplyer.init(codes, allocator);
     defer bpe.deinit();
-    var out = try std.ArrayList(u8).initCapacity(std.testing.allocator, 512);
+    var out = try std.ArrayList(u8).initCapacity(allocator, 512);
     defer out.deinit();
 
     assertEqlString(

@@ -5,7 +5,10 @@ from pathlib import Path
 import time
 
 root = Path(__file__).parent.parent
-zig = ctypes.CDLL(str(root / "libapplyBPE.0.0.0.dylib"))
+if sys.platform == "darwin":
+    zig = ctypes.CDLL(str(root / "libfastBPE_apply.dylib"))
+else:
+    zig = ctypes.CDLL(str(root / "libfastBPE_apply.so"))
 
 
 def encode(s):
@@ -24,7 +27,7 @@ zig.ctypes_apply_sentence.argtypes = [
 zig.ctypes_apply_sentence.argtypes
 
 
-_buff = ctypes.create_string_buffer(b"_" * 1024)
+_buff = ctypes.create_string_buffer(b"_" * 4096)
 
 
 def bpe_sent(bpe, sentence: bytes) -> bytes:

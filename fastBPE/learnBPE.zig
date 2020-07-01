@@ -88,7 +88,7 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
             n_words += try readTextFromBuff(word_count, line);
         }
     } else {
-        var realpath_buff: [1024]u8 = undefined;
+        var realpath_buff: [std.fs.MAX_PATH_BYTES]u8 = undefined;
         const realpath = try std.fs.realpath(fp, &realpath_buff);
         const file = try std.fs.openFileAbsolute(fp, .{ .read = true });
 
@@ -103,11 +103,20 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
 }
 
 pub const Vocab = std.StringHashMap(i32);
+const VocabEntry = comptime std.meta.Elem(std.meta.fieldInfo(Vocab, "entries").field_type);
 
-pub fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
+/// Orders word by number of occurences, and alphabetical order in case of ties.
+fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
     if (kv1.value == kv2.value)
         return strCmp(kv1.key, kv2.key);
     return kv1.value > kv2.value;
+}
+
+/// Like 'hasMoreOccurences' but can work directly on the "entries" of the Vocab hashmap.
+pub fn entryHasMoreOccurences(e1: VocabEntry, e2: VocabEntry) bool {
+    if (!e1.used or !e2.used)
+        return e1.used;
+    return hasMoreOccurences(e1.kv, e2.kv);
 }
 
 /// Count words in given **tokenized** files.
@@ -118,22 +127,17 @@ pub fn getVocab(inputFile1: []const u8, inputFile2: []const u8, allocator: *Allo
     if (inputFile2.len > 0) {
         try readText(inputFile2, &word_count);
     }
-    var word_count_arr = try allocator.alloc(Vocab.KV, word_count.size);
-    var i: u32 = 0;
-    var it = word_count.iterator();
-    while (it.next()) |wc| {
-        word_count_arr[i] = wc.*;
-        i += 1;
-    }
-
-    assert(i == word_count.size);
+    var entries: []VocabEntry = word_count.entries;
     warn("Word count: {}\n", .{word_count.size});
-    std.sort.sort(Vocab.KV, word_count_arr, hasMoreOccurences);
+    std.sort.sort(VocabEntry, entries, entryHasMoreOccurences);
 
     const stdout_file = std.io.getStdOut();
     // print sorted vocab
-    for (word_count_arr) |wc|
-        try stdout_file.outStream().print("{} {}\n", .{ wc.key, wc.value });
+    for (entries) |entry| {
+        // unused entries appear last after the sorting.
+        if (!entry.used) break;
+        try stdout_file.outStream().print("{} {}\n", .{ entry.kv.key, entry.kv.value });
+    }
 }
 
 pub const WordIndex = struct {
