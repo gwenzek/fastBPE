@@ -8,7 +8,7 @@ root = Path(__file__).parent.parent
 if sys.platform == "darwin":
     zig = ctypes.CDLL(str(root / "libfastBPE_apply.dylib"))
 else:
-    zig = ctypes.CDLL(str(root / "libfastBPE_apply.so"))
+    zig = ctypes.CDLL(str(root / "zig-cache/lib/libfastBPE_apply.so"))
 
 
 def encode(s):

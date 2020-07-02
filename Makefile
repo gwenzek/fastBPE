@@ -3,14 +3,21 @@ SHELL=zsh
 # RELEASE=""
 RELEASE="-Drelease-fast=true"
 
+OS := $(shell uname)
+ifeq "$(OS)" "Darwin"
+	DLL_EXT=dylib
+else
+	DLL_EXT=so
+endif
+
 .DELETE_ON_ERROR:
 
 test: small_vocab_diff small_bpe_diff small_apply_diff
 	ls fastBPE/*.zig | xargs -n1 zig test
 
-build: ./zig-cache/bin/fastBPE bin_cpp/fastBPE
+build: ./zig-cache/bin/fastBPE libfastBPE_apply.$(DLL_EXT) bin_cpp/fastBPE
 
-./zig-cache/bin/fastBPE: fastBPE/*.zig
+./zig-cache/bin/fastB%E libfastBPE_apply%$(DLL_EXT): fastBPE/*.zig
 	mkdir -p output
 	zig build $(RELEASE)
 
@@ -40,7 +47,7 @@ output/%.zig.apply.txt: data/% output/%.cpp.bpe.txt ./zig-cache/bin/fastBPE
 	# Reuse codes learnt from C++ to limit diffs to the 'p' implementation
 	time ./zig-cache/bin/fastBPE applybpe - `realpath $(word 2,$^)` < $< > $@
 
-output/%.zig_ctypes.apply.txt: data/% output/%.cpp.bpe.txt libfastBPE_apply.0.1.0.dylib
+output/%.zig_ctypes.apply.txt: data/% output/%.cpp.bpe.txt libfastBPE_apply.$(DLL_EXT)
 	time python test/test_zig.py $< $(word 2,$^) > $@
 
 output/%.cpp.apply.txt: data/% output/%.cpp.bpe.txt bin_cpp/fastBPE
@@ -89,15 +96,14 @@ perf_apply:
 test_zig_python: output/sample.txt.cpp.bpe.txt libfastBPE_apply.0.1.0.dylib
 	pytest test/test_zig.py
 
-libfastBPE_apply.0.1.0.dylib: build
-	zig build $(RELEASE)
-
 clean:
-	rm bin_cpp/fastBPE libfastBPE_apply.*
-	rm -r ./zig-cache
+	[[ ! -f bin_cpp/fastBPE ]] || rm bin_cpp/fastBPE
+	[[ ! -f ./zig-cache ]] || rm ./zig-cache
+	[[ ! -f libfastBPE_apply.$(DLL_EXT) ]] || rm libfastBPE_apply.$(DLL_EXT)
 	rm output/*.apply.txt
 
 profile_python_wrapper: output/fr.train.cpp.bpe.txt
 	which python; python --version
-	py-spy record -r500 --native python --output output/flame/zig_ctypes.svg test/test_zig.py data/fr.train $< > /dev/null
-	py-spy record -r500 --native python --output output/flame/cpp_cython.svg test/test_cpp.py data/fr.train $< > /dev/null
+	mkdir -p output/flame
+	py-spy record -r500 --native --output output/flame/zig_ctypes.svg python test/test_zig.py data/fr.train $< > /dev/null
+	py-spy record -r500 --native --output output/flame/cpp_cython.svg python test/test_cpp.py data/fr.train $< > /dev/null
