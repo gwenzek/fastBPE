@@ -4,7 +4,7 @@
 This a Zig port of the
 C++ implementation of [Neural Machine Translation of Rare Words with Subword Units](https://arxiv.org/abs/1508.07909), with Python API.
 
-[Write-up of the rewrite](./analysis.html)
+[Write-up of the rewrite](https://gwenzek.github.io/fastBPE/analysis.html)
 
 ## Installation
 
