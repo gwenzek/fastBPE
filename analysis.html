@@ -4,10 +4,14 @@
 
 # Goal
 
-I rewrote fastBPE from C++ to Zig.
-The main goal was to actually learn Zig on a small project performance oriented.
+I [rewrote](https://github.com/gwenzek/fastBPE) fastBPE from C++
+to [Zig](https://ziglang.org/).
+FastBPE is a [C++ implementation](https://github.com/glample/fastBPE) of the Bytes Pair Encoding algorithm introduced by [Sennrich] et al.
+The main goal was to actually learn Zig on a small performance-oriented project.
 I'm also interested in the performance impact of changing language.
 C++ claims to be as fast as C while Zig claims to be faster than C thanks to better defaults.
+
+[#Sennrich]: Sennrich, Rico, Barry Haddow, and Alexandra Birch. [Neural Machine Translation of Rare Words with Subword Units](https://arxiv.org/abs/1508.07909) (2015)
 
 # What's BPE
 
@@ -17,7 +21,7 @@ is that the notion is very specific to each languages, poorly defined for some l
 This makes writting the "tokenizer" relatively complex, with a lot of language specific rules, and ends up being relatively slow.
 And it assumes you know in which language your text is in, which is not always so easy.
 The large vocabulary is also a problem for neural network trained to predict the next word in a sentence, because you need to compute a probability for each word in your vocabulary.
-And you always end up finding words that wheren't part of your vocabulary, like the name of a new korean pop star that is all over the place but that you're model have never heard up about before.
+And you always end up finding words that weren't part of your vocabulary, or that you saw so little time that your model doesn't handle them correctly.
 BPE aims to solve this issue by splitting the text in frequent chuncks of characters.
 So "I'm eating some apples." might become "I'm eat ing some appl es.".
 It doesn't aim at being linguistically correct, but rather at being a good compromise between speed, correctness, and coverage.
@@ -31,7 +35,7 @@ Outline of the algorithm:
 * At inference time, reuse the same basic tokenization
 * Treat each character of the word as a token
 * Merge recursively the tokens, prioritizing those with the highest score:
-    e a t i n g -> ea t i n g -> ea t i ng -> ea t ing -> eat ing
+    `e a t i n g -> ea t i n g -> ea t i ng -> ea t ing -> eat ing`
 * The algorithm is mostly linear but quadratic in the length of your words.
 
 
@@ -53,7 +57,7 @@ an approximated solution rather than churning CPU at it.
 
 I evaluated the "apply" part of the algorithm starting from learned codes.
 The corpus used as input is 800k words long and is extracted from the French Wikipedia.
-All implementation produce the exact same files.
+All implementations produce the exact same files.
 
 For C++ there are two implementations:
 * `apply` takes a whole file, load it memory as one bytes array and treat it with 4 threads in parallel.
@@ -130,7 +134,7 @@ Maybe it's due to the Python IO being faster than `stdio.h` ? I don't know ^^
 
 I used [py-spy](https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/) to benchmark the two python wrappers (click to enlarge).
 
-![C++ - Cython](./cpp_cython.svg)
+![C++ - Cython](./test/cpp_cython.svg)
 
 The Cython flame graph is a mess, hard to see what's going around.
 I think the -O3 optimization level is inlining so much stuff that the call stack is probably mostly wrong.
@@ -139,10 +143,24 @@ So I'm not sure how much conclusion we can draw from this one.
 Most of the time seems to be inside `unordered_map::find` which is logic.
 We can see we are also spending some 10% of our time into `vec::push_back` which is probably due to the vector often resizing.
 
-![Zig - Ctypes](./zig_ctypes.svg)
-That's better.
+![Zig - Ctypes](./test/zig_ctypes.svg)
+That's more readable.
+Apparently we spend 25% in `HashMap.ensureCapacityExact` which is called when the `HashMap` need to grow.
+This happens only when loading the bytes paires and their score from the disk.
+I should probably be more aggressive here with the first allocation,
+and I could also save in the file the number of pairs.
+I have to be careful if I want the zig code to read old models trained with the C++ code.
 
-**TODO** analyze flame graphs
+I also spend 14% of the time copying back the results from the zig code to python.
+Currently the python code passes a buffer to python and copies the result to a new `bytes` object.
+I think it'd be better if Zig could directly return a Python bytes object, but I'm not sure how to do that.
+
+We also have `PyCFuncPtrCall` that cost 6%.
+This is the cost of calling the Zig function from Python.
+It can be mitigated by calling the a Zig function that reads the full file,
+but I think it's interesting to benchmark it this way, because one of the point
+of the Python wrapper is to grant more flexibility to the caller.
+
 
 
 <!-- Markdeep footer -->

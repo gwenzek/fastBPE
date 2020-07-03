@@ -1,13 +1,16 @@
 
 # fastBPE
 
+This a Zig port of the
 C++ implementation of [Neural Machine Translation of Rare Words with Subword Units](https://arxiv.org/abs/1508.07909), with Python API.
+
+[Write-up of the rewrite](./analysis.html)
 
 ## Installation
 
 Compile with:
 ```
-g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o fast
+make build
 ```
 
 ## Usage:
