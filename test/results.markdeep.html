@@ -4,10 +4,36 @@
 
 # Goal
 
-I rewrote the fastBPE from C++ to Zig.
+I rewrote fastBPE from C++ to Zig.
 The main goal was to actually learn Zig on a small project performance oriented.
 I'm also interested in the performance impact of changing language.
 C++ claims to be as fast as C while Zig claims to be faster than C thanks to better defaults.
+
+# What's BPE
+
+In NLP (Natural Language Processing), one of the first thing we do when feeding
+text to another algorithm is to split it into "words". The problem with "words"
+is that the notion is very specific to each languages, poorly defined for some languages, and on top of that you generally ends up with a very large vocabulary.
+This makes writting the "tokenizer" relatively complex, with a lot of language specific rules, and ends up being relatively slow.
+And it assumes you know in which language your text is in, which is not always so easy.
+The large vocabulary is also a problem for neural network trained to predict the next word in a sentence, because you need to compute a probability for each word in your vocabulary.
+And you always end up finding words that wheren't part of your vocabulary, like the name of a new korean pop star that is all over the place but that you're model have never heard up about before.
+BPE aims to solve this issue by splitting the text in frequent chuncks of characters.
+So "I'm eating some apples." might become "I'm eat ing some appl es.".
+It doesn't aim at being linguistically correct, but rather at being a good compromise between speed, correctness, and coverage.
+I'm personally not a big fan of BPE, because it uses frequences rather than mutual information, but it's implementation is relatively straightforward, so I chose it for this exercise.
+If this topic interest, you look into [sentence piece](https://github.com/google/sentencepiece).
+
+Outline of the algorithm:
+
+* At train time, use some basic tokenization (on spaces, newlines, ...)
+* Compute the frequency of all n-grams
+* At inference time, reuse the same basic tokenization
+* Treat each character of the word as a token
+* Merge recursively the tokens, prioritizing those with the highest score:
+    e a t i n g -> ea t i n g -> ea t i ng -> ea t ing -> eat ing
+* The algorithm is mostly linear but quadratic in the length of your words.
+
 
 # Zig implementation
 
@@ -16,6 +42,12 @@ The main difference is memory allocation.
 In Zig memory implementation is more explicit than in C++ and a bit more cumbersome.
 I decided to make the Zig version prealloacate memory and to not allocate during processing.
 The C++ implementation also do a lot of small string concatenations which was replaced by array slicing in Zig.
+I think this is fair because in Zig you have to think about memory allocation
+and preallocating makes everything easier.
+The main downside is that it can't handle "words" which are more than 4096 bytes long (but that shouldn't happen to often), and arbitrarely skip them in 4096 bytes chunks.
+I think when facing such pathological case I prefer my computer to default to
+an approximated solution rather than churning CPU at it.
+
 
 # Benchmark
 
@@ -24,7 +56,7 @@ The corpus used as input is 800k words long and is extracted from the French Wik
 All implementation produce the exact same files.
 
 For C++ there are two implementations:
-* `apply` takes a whole file, load it memory and treat it with 4 threads.
+* `apply` takes a whole file, load it memory as one bytes array and treat it with 4 threads in parallel.
 * `apply_stream` read from stdin and process lines one by one in a single thread.
 
 I'm more interested by the second version because they are different use case where I won't have the file on disk:
@@ -46,7 +78,6 @@ So unless mentioned implementation refers to the stream mode.
 # Python wrapper
 
 Another thing I wanted to evaluate with this project is to compare the different way of writing C extension for Python.
-
 
 There are 3 main alternatives: Cython, pybind11, cffi.
 Here is a table comparing them summarizing from Stephan [Behnel] blog
@@ -88,7 +119,6 @@ def apply(file: str, codes: str) -> None:
 |:---------------|------:|---------:|:---------|
 | C++            | 2.92s |    274/s | 1× (ref) |
 | C++ - Cython   | 2.79s |    287/s | 0.95×    |
-|----------------|-------|----------|----------|
 | Zig            | 1.06s |    755/s | 1× (ref) |
 | Zig - Ctypes   | 1.07s |    748/s | 1.01×    |
 
@@ -98,10 +128,21 @@ Maybe it's due to the Python IO being faster than `stdio.h` ? I don't know ^^
 
 ## Flame graph
 
-I used [py-spy](https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/) to benchmark the two python wrappers.
+I used [py-spy](https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/) to benchmark the two python wrappers (click to enlarge).
 
 ![C++ - Cython](./cpp_cython.svg)
+
+The Cython flame graph is a mess, hard to see what's going around.
+I think the -O3 optimization level is inlining so much stuff that the call stack is probably mostly wrong.
+In particular the string concatenation isn't calling `process_bpe`.
+So I'm not sure how much conclusion we can draw from this one.
+Most of the time seems to be inside `unordered_map::find` which is logic.
+We can see we are also spending some 10% of our time into `vec::push_back` which is probably due to the vector often resizing.
+
 ![Zig - Ctypes](./zig_ctypes.svg)
+That's better.
+
+**TODO** analyze flame graphs
 
 
 <!-- Markdeep footer -->
