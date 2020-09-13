@@ -1,0 +1,238 @@
+<meta charset="utf-8">
+
+                            **Rewriting an NLP tool from C++ to Zig**
+                                    Guillaume Wenzek
+
+## Overview
+
+FastBPE is a [C++ implementation](https://github.com/glample/fastBPE) of the Bytes Pair Encoding (BPE) algorithm from [Sennrich].
+
+Goals:
+    * learn Zig on a small performance-oriented project.
+    * check for myself the "Zig is faster than C"
+
+[#Sennrich]: Sennrich, Rico, Barry Haddow, and Alexandra Birch. [Neural Machine Translation of Rare Words with Subword Units](https://arxiv.org/abs/1508.07909) (2015)
+
+# What's BPE ?
+
+## "Words"
+
+* for NLP we want to split text into "words"
+* learning from "words" is easier than learning from characters
+* "word" isn't a well defined concept
+* "word" is language specific
+    * `isn't` -> 1 word
+    * `qu'il` -> 2 word
+* some languages don't really have words
+
+## Traditional regex tokenizer
+
+* lot of language specific rules
+* assumes you know the language of the text
+* very large vocabulary
+    * scaling problem for language models
+* you always find words outside of your vocabulary
+* or rare words that aren't correctly handled by your model
+
+## BPE solution
+
+* splitting the text in frequent chuncks of characters.
+* `I'm eating some apples.` ->  `I'm eat ing some appl es.`
+* Compromise between
+    * linguistic
+    * speed
+    * vocabulary size
+* Not state of the art anymore, see: [sentence piece](https://github.com/google/sentencepiece)
+
+## Outline of the algorithm
+
+* At train time, use some basic tokenization (on spaces, newlines, ...)
+* Compute the frequency of all n-grams
+* At inference time:
+    1. reuse the same basic tokenization
+    2. Treat each character of the word as a token
+    3. Merge recursively the tokens, prioritizing those with the highest score:
+        * `e a t i n g`
+        * `ea t i n g`
+        * `ea t i ng`
+        * `ea t ing`
+        * `eat ing`
+* The algorithm is mostly linear but quadratic in the length of your words.
+
+# The Zig rewrite
+
+## C++ implementation
+
+* C++ implementation was doing a lot of:
+    * vector creation
+        * to store the list of tokens at each step
+    * string concatenation
+        * to store in the token list
+
+## Zig implementation
+
+* In Zig string memory allocation is painfull
+    * vectors are preallocated, only need two at a time
+    * string aren't concatenated, but re-sliced from the original text
+
+* Decided what to do with pathological edge case
+    * if a "word" is greater than 4096, it is skipped
+    * TODO split the word in arbitrary 4096 chunks
+
+
+## Benchmark
+
+* Evaluated the "applyBPE"
+* Corpus is 800k words from French Wikipedia
+* All implementations produce the exact same files
+* For C++ there are two implementations:
+    * `apply` loads a whole file in memory and treat it with 4 threads
+    * `apply_stream` read from stdin and process lines one by one in a single thread.
+* Zig implementation is only single threaded
+
+
+## Benchmark results
+
+| Implementation | Time  | Word / s |
+|:---------------|------:|---------:|
+| C++ (batch)    | 0.47s | 1702k/s  |
+| C++            | 2.92s |  274k/s  |
+| Zig            | 0.97s |  825k/s  |
+
+# Python wrapper
+
+## The different options
+
+|   Tool   | API language | Static  | Fast |
+|:--------:|:-------------|:--------|:-----|
+|  Cython  | Python-like  | static  | fast |
+| pybind11 | C++          | static  | fast |
+|   cffi   | Python       | dynamic | slow |
+|   ctypes | Python       | dynamic | slow |
+
+
+[#Behnel]: [Cython, pybind11, cffi – which tool should you choose?](http://blog.behnel.de/posts/cython-pybind11-cffi-which-tool-to-choose.html) - Stefan Behnel
+
+## Benchmark
+
+```py
+import fastBPE, sys, time
+
+def apply(file: str, codes: str) -> None:
+    start = time.time()
+    f = sys.stdin if file == "-" else open(file, mode="r")
+    bpe = fastBPE.fastBPE(codes, "")
+    for i, line in enumerate(f):
+        s = bpe.apply([line[:-1]])[0]
+        print(s)
+
+    delay = time.time() - start
+    print(f"Computed BPE on {i} sentences in {delay:.2f}s, using cython wrapper around cpp implementation", file=sys.stderr)
+```
+
+## Benchmark Results
+
+| Implementation |  Time | Word / s | Overhead |
+|:---------------|------:|---------:|:---------|
+| C++            | 2.92s |    274/s | 1× (ref) |
+| C++ - Cython   | 2.79s |    287/s | 0.95×    |
+| Zig            | 1.06s |    755/s | 1× (ref) |
+| Zig - Ctypes   | 1.07s |    748/s | 1.01×    |
+
+
+## Flame graph C++ ⊕ Cython
+
+![C++ - Cython](./test/cpp_cython.svg)
+
+* messed up
+* mostly inside `unordered_map::find`
+* ~10% inside `vec::push_back`
+
+ Made with [py-spy](https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/)
+
+## Flame graph Zig ⊕ Ctypes
+
+![Zig - Ctypes](./test/zig_ctypes.svg)
+
+* 25% in `HashMap.ensureCapacityExact` called during loading
+* 14% copying back results from zig to python.
+* `PyCFuncPtrCall` that cost 6%.
+* reading the file from python seems faster than from Zig/C++ 🤔
+
+## The Zig side
+
+```zig
+export fn ctypes_apply_sentence(
+    bpe: *BPEApplyer,
+    sentence: [*]const u8,
+    sentence_len: usize,
+    out: [*]u8
+) usize {
+    ...
+}
+```
+
+## The Python side
+
+```py
+import ctypes
+zig = ctypes.CDLL(str(root / "zig-cache/lib/libfastBPE_apply.so"))
+zig.ctypes_apply_sentence.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_char),
+]
+
+_buff = ctypes.create_string_buffer(b"_" * 4096)
+def bpe_sent(bpe, sentence: bytes) -> bytes:
+    i = zig.ctypes_apply_sentence(bpe, sentence, len(sentence), _buff)
+    return bytes(_buff.value[:i])
+```
+
+# Conclusion
+
+## TODOs
+
+* Implement multi-threading with async/await
+    * Figure out what's the right level of synchronization
+
+## Painpoints
+    * need to think about memory allocation ALL the time
+        * eg: resolving a file path
+    * not used to this level of error handling
+    * private members / functions ?
+    * the Zig / Python interface is a bit verbose
+        * generate c-like function with Zig comptime reflection
+        * allow Zig to export function with slices ?
+        * provide a `zigtypes` module ?
+
+## Conclusion
+
+* Zig is fun
+* Zig source code is your friend
+    * Helps finding the API
+    * Helps learning the language
+* Thanks for listening !
+
+
+<!-- Markdeep footer -->
+    <style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style>
+    <link rel="stylesheet" href="https://casual-effects.com/markdeep/latest/slides.css?">
+    <style>
+        .md h1 {
+            padding-top: 100px;
+        }
+         .md h2 {
+            margin-top: 20px;
+         }
+    </style>
+    <script>
+        window.markdeepOptions = {
+            tocStyle: 'short',
+        };
+    </script>
+    <script src="https://doersino.github.io/markdeep-slides/markdeep-slides/lib/mathjax/2.7.5/MathJax.js"></script>
+    <!-- <script src="markdeep.min.js?tocStyle=none"></script> -->
+    <script src="https://morgan3d.github.io/markdeep/latest/markdeep.min.js"></script>
+    <script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>
