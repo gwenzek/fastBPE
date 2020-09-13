@@ -43,7 +43,7 @@ const WordPair = struct {
     fn eql(a: WordPair, b: WordPair) bool {
         return eqlString(a.left, b.left) and eqlString(a.right, b.right);
     }
-    fn hash(a: WordPair) u32 {
+    fn hash(a: WordPair) u64 {
         const hashString = std.hash_map.hashString;
         var h1 = hashString(a.left);
         var h2 = hashString(a.right);
@@ -96,7 +96,7 @@ export fn ctypes_apply_sentence(bpe: *BPEApplyer, sentence: [*]const u8, sentenc
     return res.len;
 }
 
-const Codes = std.HashMap(WordPair, u32, WordPair.hash, WordPair.eql);
+const Codes = std.HashMap(WordPair, u32, WordPair.hash, WordPair.eql, std.hash_map.DefaultMaxLoadPercentage);
 const BPEApplyer = struct {
     /// Class to apply BPE to text.
     /// Pass by pointer: this struct is very wide because it contains buffers for the conversion.
@@ -182,9 +182,9 @@ const BPEApplyer = struct {
         while (subwords.items.len > 1) {
             // find the best pair
             var best_pair_pos: i32 = -1;
-            var best_pair: Codes.KV = undefined;
+            var best_pair: Codes.Entry = undefined;
             for (subwords.items[0 .. subwords.items.len - 1]) |sw, i| {
-                if (self.codes.get(.{ .left = sw, .right = subwords.items[i + 1] })) |pair| {
+                if (self.codes.getEntry(.{ .left = sw, .right = subwords.items[i + 1] })) |pair| {
                     var pair_rank = pair.value;
                     if (pair_rank >= 0 and (best_pair_pos == -1 or best_pair.value > pair_rank)) {
                         best_pair = pair.*;

@@ -3,11 +3,16 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const warn = std.debug.warn;
-const debug = std.debug.warn;
 
 const c = @cImport({
     @cInclude("sys/mman.h");
 });
+
+fn debug(any: anytype) void {
+    std.debug.warn("[DEBUG]");
+    std.debug.warn(any);
+    std.debug.warn("\n");
+}
 
 const kMaxPairs: i32 = 1000 * 1000 * 1000;
 const kThreads: i32 = max(1, min(10, int(c.thread.hardware_concurrency())));
@@ -60,7 +65,7 @@ fn readTextFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
 
         if (w.len == 0) continue;
         n_words += 1;
-        if (word_count.get(w)) |wc| {
+        if (word_count.getEntry(w)) |wc| {
             wc.value += 1;
         } else {
             const w_copy = try word_count.allocator.alloc(u8, w.len);
@@ -99,24 +104,21 @@ pub fn readText(fp: []const u8, word_count: *Vocab) !void {
 
         n_words = try readTextFromBuff(word_count, buffer);
     }
-    warn("Read {} words ({} unique) from text file.\n", .{ n_words, word_count.size });
+    warn("Read {} words ({} unique) from text file.\n", .{ n_words, word_count.count() });
 }
 
 pub const Vocab = std.StringHashMap(i32);
-const VocabEntry = comptime std.meta.Elem(std.meta.fieldInfo(Vocab, "entries").field_type);
+const VocabEntry = Vocab.Entry;
+pub const VocabHeader = packed struct {
+    entries: [*]VocabEntry,
+    capacity: Vocab.Size,
+};
 
 /// Orders word by number of occurences, and alphabetical order in case of ties.
-fn hasMoreOccurences(kv1: Vocab.KV, kv2: Vocab.KV) bool {
+fn hasMoreOccurences(context: void, kv1: Vocab.Entry, kv2: Vocab.Entry) bool {
     if (kv1.value == kv2.value)
         return strCmp(kv1.key, kv2.key);
     return kv1.value > kv2.value;
-}
-
-/// Like 'hasMoreOccurences' but can work directly on the "entries" of the Vocab hashmap.
-pub fn entryHasMoreOccurences(e1: VocabEntry, e2: VocabEntry) bool {
-    if (!e1.used or !e2.used)
-        return e1.used;
-    return hasMoreOccurences(e1.kv, e2.kv);
 }
 
 /// Count words in given **tokenized** files.
@@ -127,16 +129,29 @@ pub fn getVocab(inputFile1: []const u8, inputFile2: []const u8, allocator: *Allo
     if (inputFile2.len > 0) {
         try readText(inputFile2, &word_count);
     }
-    var entries: []VocabEntry = word_count.entries;
-    warn("Word count: {}\n", .{word_count.size});
-    std.sort.sort(VocabEntry, entries, entryHasMoreOccurences);
+    // Ideally we could salvage the word_count buffer as we iterate through it.
+    // We used to be able to do that, but not anymore.
+    // var unmanaged = word_count.unmanaged;
+    // @ptrCast(*VocabHeader, @ptrCast([*]VocabHeader, unmanaged.metadata.?) - 1)
+    // var entries_ptr: [*]VocabEntry = .entries;
+    // var entries = entries_ptr[]
+    var entries: []VocabEntry = try allocator.alloc(VocabEntry, word_count.count());
+    var i: usize = 0;
+    var it = word_count.iterator();
+    while (it.next()) |entry| {
+        entries[i] = entry.*;
+        i += 1;
+    }
+
+    // var entries: []VocabEntry = word_count.unmanaged.recycle();
+    defer word_count.deinit();
+    warn("Word count: {}\n", .{entries.len});
+    std.sort.sort(VocabEntry, entries, {}, hasMoreOccurences);
 
     const stdout_file = std.io.getStdOut();
     // print sorted vocab
     for (entries) |entry| {
-        // unused entries appear last after the sorting.
-        if (!entry.used) break;
-        try stdout_file.outStream().print("{} {}\n", .{ entry.kv.key, entry.kv.value });
+        try stdout_file.outStream().print("{} {}\n", .{ entry.key, entry.value });
     }
 }
 
@@ -144,7 +159,7 @@ pub const WordIndex = struct {
     ids: std.StringHashMap(u32) = undefined,
     tokens: std.ArrayList([]const u8) = undefined,
 
-    pub fn init(allocator: *Allocator, capacity: usize) !WordIndex {
+    pub fn init(allocator: *Allocator, capacity: u32) !WordIndex {
         var idx = WordIndex{
             .ids = std.StringHashMap(u32).init(allocator),
             .tokens = std.ArrayList([]const u8).init(allocator),
@@ -167,7 +182,7 @@ pub const WordIndex = struct {
             }
         }
 
-        if (self.ids.getValue(new_token)) |id| {
+        if (self.ids.get(new_token)) |id| {
             return id;
         } else {
             var new_id = @intCast(u32, self.tokens.items.len);
@@ -197,7 +212,7 @@ const LearnBpeState = struct {
     where: Where,
     contiguous_counts: std.ArrayList(PairCount),
 
-    pub fn init(allocator: *std.mem.Allocator, capacity: u32) !LearnBpeState {
+    pub fn init(allocator: *std.mem.Allocator, capacity: usize) !LearnBpeState {
         var state = LearnBpeState{
             .pair_counts = PairCounts.init(allocator),
             .where = Where.init(allocator),
@@ -210,8 +225,9 @@ const LearnBpeState = struct {
     pub fn ensureExtraCapacity(self: *LearnBpeState, capacity: usize) !void {
         var len = self.contiguous_counts.items.len;
         try self.contiguous_counts.ensureCapacity(len + capacity);
-        try self.pair_counts.ensureCapacity(len + capacity);
-        try self.where.ensureCapacity(len + capacity);
+        var full_len = @intCast(u32, len + capacity);
+        try self.pair_counts.ensureCapacity(full_len);
+        try self.where.ensureCapacity(full_len);
     }
 
     pub fn inc_count(self: *LearnBpeState, w1: u32, w2: u32, v: i32, wid: u32) !void {
@@ -219,10 +235,10 @@ const LearnBpeState = struct {
         const pair = WordPair{ .w1 = w1, .w2 = w2 };
         if (self.pair_counts.get(pair)) |kv| {
             // assert(kv.value.count + v >= 0);
-            const old_count = kv.value.count;
-            kv.value.count += v;
+            const old_count = kv.count;
+            kv.count += v;
             if (v > 0) {
-                var words = &self.where.get(pair).?.value;
+                var words = &self.where.get(pair).?;
                 _ = try words.put(wid, {});
             }
             // should we remove from where if kv.value.count falls to 0 ?
@@ -274,7 +290,7 @@ pub fn learnbpe(kNPairs: i32, inputFile1: []const u8, inputFile2: []const u8, al
         _ = try print("{} {} {}\n", .{ tokens.*[max_p.w1], tokens.*[max_p.w2], max_p.count });
         var new_token_id = try idx.getOrAdd(new_token, false);
 
-        var where_it = state.where.get(WordPair{ .w1 = max_p.w1, .w2 = max_p.w2 }).?.value.iterator();
+        var where_it = state.where.get(WordPair{ .w1 = max_p.w1, .w2 = max_p.w2 }).?.iterator();
         while (where_it.next()) |wi| {
             var full_word = &all_words[wi.key];
             var cwi = counts.items[wi.key];
@@ -363,13 +379,13 @@ fn count_in_word(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpe
             continue;
 
         if (pair_counts.get(cur_pair)) |pair_count| {
-            const old_cont = pair_count.value.count;
-            pair_count.value.count += count;
+            const old_cont = pair_count.count;
+            pair_count.count += count;
             var w = where.get(cur_pair);
             if (count > 0) {
-                _ = try w.?.value.put(wi, {});
+                _ = try w.?.put(wi, {});
             } else {
-                _ = w.?.value.remove(wi);
+                _ = w.?.remove(wi);
             }
         } else {
             const pair_count = PairCount.init(cur_pair, count);

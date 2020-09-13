@@ -24,7 +24,6 @@ zig.ctypes_apply_sentence.argtypes = [
     ctypes.c_size_t,
     ctypes.POINTER(ctypes.c_char),
 ]
-zig.ctypes_apply_sentence.argtypes
 
 
 _buff = ctypes.create_string_buffer(b"_" * 4096)
