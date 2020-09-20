@@ -338,7 +338,8 @@ fn assertEqlString(message: []const u8, actual: []const u8, expected: []const u8
 
 test "apply word" {
     var allocator = std.testing.allocator;
-    var codes = Codes.initCapacity(allocator, 512);
+    var codes = Codes.init(allocator);
+    try codes.ensureCapacity(512);
     var bpe = try BPEApplyer.init(codes, allocator);
     defer bpe.deinit();
     var out = try std.ArrayList(u8).initCapacity(allocator, 512);
