@@ -140,7 +140,7 @@ def apply(file: str, codes: str) -> None:
 | Zig - Ctypes   | 1.07s |    748/s | 1.01×    |
 
 
-## Flame graph C++ ⊕ Cython
+## Flame graph C++ + Cython
 
 ![C++ - Cython](./test/cpp_cython.svg)
 
@@ -150,7 +150,7 @@ def apply(file: str, codes: str) -> None:
 
  Made with [py-spy](https://www.benfrederickson.com/profiling-native-python-extensions-with-py-spy/)
 
-## Flame graph Zig ⊕ Ctypes
+## Flame graph Zig + Ctypes
 
 ![Zig - Ctypes](./test/zig_ctypes.svg)
 
@@ -218,13 +218,63 @@ def bpe_sent(bpe, sentence: bytes) -> bytes:
 
 <!-- Markdeep footer -->
     <style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style>
+    <link rel="stylesheet" media="screen" href="https://fontlibrary.org/face/press-start-2p" type="text/css"/>
     <link rel="stylesheet" href="https://casual-effects.com/markdeep/latest/slides.css?">
     <style>
+        body#md {
+            --fonts: 'PressStart2PRegular';
+            --bg: #131315;
+            --fg: #ffffff;
+            --title: #ffff54;
+            --keyword: #4dd0e1;
+            --string: #9ccc65;
+            --number: #fbc02d;
+            --builtin: #ce93d8;
+            --accent-color: var(--builtin);
+        }
+        .hljs-params { color: var(--fg); }
+        .hljs-keyword { color: var(--keyword); }
+        .hljs-string, .hljs-subst { color: var(--string); }
+        .hljs-number { color: var(--number); }
+        .hljs-built_in { color: var(--built_in); }
+
+        body, .md div.title, .md a, .md h1, .md h2, .md code {
+            font-family: var(--fonts);
+        }
+        body, body#md {
+            background-color: var(--bg);
+            color: var(--fg);
+            font-size: 12pt;
+        }
+        .md div.title, .md h1, .md h2, .hljs-function .hljs-title {
+            background-color: var(--bg);
+            color: var(--title);
+        }
         .md h1 {
             padding-top: 100px;
         }
          .md h2 {
             margin-top: 20px;
+         }
+         .md a:link, .md a:visited {
+            color: var(--keyword);
+         }
+         .md li::marker {
+            color: var(--keyword);
+         }
+         .md li.asterisk::marker {
+            content: "•";
+         }
+         .md table, .md table.table th, .md table.table tr:nth-child(2n) {
+            font-family: var(--fonts);
+            background-color: var(--bg);
+         }
+         .md table.table th {
+            color: var(--title);
+            border-bottom: solid var(--fg);
+         }
+         pre {
+            padding: 2px;
          }
     </style>
     <script>
