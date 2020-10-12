@@ -170,6 +170,11 @@ pub const WordIndex = struct {
         return idx;
     }
 
+    pub fn deinit(self: *WordIndex) void {
+        self.ids.deinit();
+        self.tokens.deinit();
+    }
+
     pub fn ensureCapacity(self: *WordIndex, capacity: u32) !void {
         try self.ids.ensureCapacity(capacity);
         try self.tokens.ensureCapacity(capacity);
@@ -227,14 +232,23 @@ const LearnBpeState = struct {
 
     pub fn init(allocator: *std.mem.Allocator) LearnBpeState {
         var state = LearnBpeState{
-            .index = try WordIndex.init(allocator),
             .full_words = std.ArrayList(std.ArrayList(u32)).init(allocator),
             .word_counts = std.ArrayList(i32).init(allocator),
             .pairs = PairCounts.init(allocator),
             .pair_loc = PairLoc.init(allocator),
             .contiguous_counts = std.ArrayList(PairCount).init(allocator),
+            .index = try WordIndex.init(allocator),
         };
         return state;
+    }
+
+    pub fn deinit(self: *LearnBpeState) void {
+        self.full_words.deinit();
+        self.word_counts.deinit();
+        self.pairs.deinit();
+        self.pair_loc.deinit();
+        self.contiguous_counts.deinit();
+        self.index.deinit();
     }
 
     pub fn ensureExtraCapacity(self: *LearnBpeState, capacity: usize) !void {
@@ -254,8 +268,8 @@ const LearnBpeState = struct {
         var new_token = try strConcat(self.index.tokens.allocator, tokens.*[merge.w1], tokens.*[merge.w2]);
         var new_token_id = try self.index.getOrPut(new_token, false);
 
-        var where_it = self.pair_loc.get(merge).?.iterator();
         var full_words = self.full_words.span();
+        var where_it = self.pair_loc.get(merge).?.iterator();
         while (where_it.next()) |wi| {
             var full_word = &full_words[wi.key];
             var cwi = self.word_counts.items[wi.key];
@@ -298,15 +312,14 @@ const LearnBpeState = struct {
         }
     }
 
-    fn getCount(self: * const LearnBpeState, w1: str, w2: str) i32 {
+    fn getCount(self: *const LearnBpeState, w1: str, w2: str) i32 {
         var w1_id: u32 = self.index.ids.get(w1).?;
         if (w2.len == 0) {
             return self.word_counts.items[w1_id];
         } else {
             var w2_id = self.index.ids.get(w2).?;
-            return self.pairs.get(.{.w1=w1_id, .w2 = w2_id}).?.count;
+            return self.pairs.get(.{ .w1 = w1_id, .w2 = w2_id }).?.count;
         }
-
     }
 
     /// Increments the count for the pair (w1, w2), found in word 'wid'.
@@ -410,6 +423,7 @@ test "init single chars" {
     try vocab.put("hello", 1);
     try vocab.put("world", 2);
     var state = LearnBpeState.init(allocator);
+    defer state.deinit();
     try state.ensureExtraCapacity(16);
     try initSingleChars(&vocab, &state);
     // 8 because there are 7 unique chars, but "o" appears both at the end
