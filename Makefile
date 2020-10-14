@@ -1,7 +1,7 @@
 SHELL=zsh
 # Only enable this when developping and compilation time is the bottleneck
-# RELEASE=""
-RELEASE="-Drelease-fast=true"
+RELEASE=
+# RELEASE="-Drelease-fast=true"
 
 OS := $(shell uname)
 ifeq "$(OS)" "Darwin"
