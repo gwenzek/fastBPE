@@ -12,11 +12,10 @@ const log = std.log.scoped(.fastBPE);
 const str = []const u8;
 
 fn debug(comptime fmt: str, any: anytype) void {
-    std.debug.print("[DEBUG]");
-    std.debug.print(fmt, any);
-    std.debug.print("\n");
+    std.debug.print("[DEBUG] " ++ fmt ++ "\n", any);
 }
 
+const kMaxWordLen: usize = 4096;
 const kMaxPairs: i32 = 1000 * 1000 * 1000;
 const kThreads: i32 = max(1, min(10, int(clib.thread.hardware_concurrency())));
 pub const kEndWord = comptime "</w>";
@@ -161,12 +160,14 @@ pub fn getVocab(inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
 pub const WordIndex = struct {
     ids: std.StringHashMap(u32) = undefined,
     tokens: std.ArrayList(str) = undefined,
+    _buffer: [kMaxWordLen + kEndWord.len]u8 = [_]u8{0} ** (kMaxWordLen + kEndWord.len),
 
     pub fn init(allocator: *Allocator) !WordIndex {
         var idx = WordIndex{
             .ids = std.StringHashMap(u32).init(allocator),
             .tokens = std.ArrayList(str).init(allocator),
         };
+        std.mem.copy(u8, idx._buffer[kMaxWordLen..], kEndWord);
         return idx;
     }
 
@@ -181,30 +182,35 @@ pub const WordIndex = struct {
     }
 
     pub fn getOrPut(self: *WordIndex, word: str, end_of_word: bool) !u32 {
-        var new_token = word;
-        var need_free = false;
+        var _word = word;
         if (end_of_word) {
-            new_token = try strConcat(self.ids.allocator, word, kEndWord);
-            need_free = true;
+            std.mem.copy(u8, self._buffer[kMaxWordLen - word.len ..], word);
+            _word = self._buffer[kMaxWordLen - word.len ..];
         }
 
         var new_id = @intCast(u32, self.tokens.items.len);
         try self.ensureCapacity(new_id + 1);
-        var res = try self.ids.getOrPut(new_token);
+        var res = try self.ids.getOrPut(_word);
         if (res.found_existing) {
             var id = res.entry.value;
-            // debug("get token: {} -> {}\n", .{new_token, id});
-            if (need_free) {
-                self.ids.allocator.free(new_token);
-            }
+            // debug("get token: {} -> {}", .{ _word, id });
             return id;
         } else {
-            // debug("add new token: {} -> {}\n", .{new_id, new_token});
+            debug("add new token: {} -> {}", .{ new_id, _word });
+            // TODO: We can do this without copying by storing (string, bool) instead
+            var new_word = try self.tokens.allocator.alloc(u8, _word.len);
+            std.mem.copy(u8, new_word, _word);
+            // We update the key so that we point to the newly allocated string
+            // instead of the buffer.
+            res.entry.*.key = new_word;
             res.entry.*.value = new_id;
-            self.tokens.appendAssumeCapacity(new_token);
-            need_free = false;
+            self.tokens.appendAssumeCapacity(new_word);
             return new_id;
         }
+    }
+
+    pub fn count(self: *WordIndex) !u32 {
+        return @intCast(u32, self.tokens.items.len);
     }
 };
 
@@ -352,27 +358,35 @@ const LearnBpeState = struct {
 /// Learns BPE from the given files.
 pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
     // get vocab
+    debug("Extracting vocabulary...", .{});
     var word_count = Vocab.init(allocator);
     try readWords(inputFile1, &word_count);
     if (inputFile2.len > 0) {
         try readWords(inputFile2, &word_count);
     }
+    debug("Vocabulary extrated, found {} words.", .{word_count.count()});
 
     // a token is an int, it represents a string
     const reservation = @intCast(u32, 20 * n_pairs);
     var state = LearnBpeState.init(allocator);
     try state.ensureExtraCapacity(reservation);
+    debug("Initializing counters for 1-char tokens...", .{});
     try initSingleChars(&word_count, &state);
+    debug("Counter initialized, found {} tokens", .{state.index.count()});
 
+    debug("Counting pairs of chars ...", .{});
     var word_counts = state.word_counts.span();
     for (state.full_words.span()) |word, wi| {
         try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
     }
+    debug("Found {} pairs.", .{state.pairs.count()});
 
+    debug("Recursively merging top pairs ...", .{});
     try printSortedBytePairs(&state, n_pairs, std.io.getStdOut());
 }
 
 fn printSortedBytePairs(state: *LearnBpeState, n_pairs: i32, file: std.fs.File) !void {
+    // TODO: make this an iterator, and move the printing out of the iterator
     const print = file.writer().print;
     var idx = state.index;
     var i: usize = 0;
@@ -381,7 +395,8 @@ fn printSortedBytePairs(state: *LearnBpeState, n_pairs: i32, file: std.fs.File) 
         var tokens = &idx.tokens.items;
         _ = try print("{} {} {}\n", .{ tokens.*[max_p.w1], tokens.*[max_p.w2], max_p.count });
 
-        try state.mergeCounts(.{ .w1 = max_p.w1, .w2 = max_p.w2 });
+        // TODO: fix segfault introduced by mergeCounts
+        // try state.mergeCounts(.{ .w1 = max_p.w1, .w2 = max_p.w2 });
         max_p.count = -1;
     }
 }
@@ -439,6 +454,37 @@ test "init single chars" {
     assert(state.index.ids.contains("o"));
     assert(state.index.ids.contains("r"));
     assert(state.index.ids.contains("d</w>"));
+}
+
+fn assertContainsPair(state: *LearnBpeState, w1: str, w2: str) void {
+    assert(state.index.ids.contains(w1));
+    assert(state.index.ids.contains(w2));
+    assert(state.pairs.contains(.{
+        .w1 = state.index.ids.get(w1).?,
+        .w2 = state.index.ids.get(w2).?,
+    }));
+}
+
+test "init count pair of chars" {
+    var allocator = std.testing.allocator;
+    var vocab = Vocab.init(allocator);
+    try vocab.put("hello", 1);
+    try vocab.put("world", 2);
+    var state = LearnBpeState.init(allocator);
+    try state.ensureExtraCapacity(16);
+    try initSingleChars(&vocab, &state);
+    assert(state.index.ids.count() == 8);
+
+    var word_counts = state.word_counts.span();
+    for (state.full_words.span()) |word, wi| {
+        try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
+    }
+    // 5 chars in a word -> 4 bigrams. All bigrams are distinct.
+    assert(state.pairs.count() == 8);
+
+    assertContainsPair(&state, "h", "e");
+    assertContainsPair(&state, "e", "l");
+    assertContainsPair(&state, "l", "o</w>");
 }
 
 fn countPairOfChars(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpeState) !void {

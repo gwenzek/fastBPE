@@ -11,9 +11,33 @@ fn get_args(args: [][]const u8, n: usize) []const u8 {
 }
 
 pub fn main() anyerror!void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    var alloc = &arena.allocator;
+    // var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // defer arena.deinit();
+    // var alloc = &arena.allocator;
+    comptime var GPA = std.heap.GeneralPurposeAllocator(.{
+        // Number of stack frames to capture.
+        .stack_trace_frames = 16,
+
+        // If true, the allocator will have two fields:
+        //  * `total_requested_bytes` which tracks the total allocated bytes of memory requested.
+        //  * `requested_memory_limit` which causes allocations to return `error.OutOfMemory`
+        //    when the `total_requested_bytes` exceeds this limit.
+        // If false, these fields will be `void`.
+        .enable_memory_limit = false,
+
+        // Whether to enable safety checks.
+        .safety = true,
+
+        // Whether the allocator may be used simultaneously from multiple threads.
+        .thread_safe = true,
+
+        // This is a temporary debugging trick you can use to turn segfaults into more helpful
+        // logged error messages with stack trace details. The downside is that every allocation
+        // will be leaked!
+        .never_unmap = true,
+    }){};
+    var alloc = &GPA.allocator;
+    defer std.debug.assert(GPA.deinit());
 
     var args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
