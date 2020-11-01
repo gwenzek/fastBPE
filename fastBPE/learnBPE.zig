@@ -11,7 +11,17 @@ const clib = @cImport({
 const log = std.log.scoped(.fastBPE);
 const str = []const u8;
 
-fn debug(comptime fmt: str, any: anytype) void {
+const DebugMode = u32;
+const LEARN_BPE: u8 = 1;
+const READ_WORDS: u8 = 2;
+const PUT_WORD: u8 = 4;
+const FIND_MAX_P: u8 = 4;
+const DEBUG: u32 = LEARN_BPE | READ_WORDS;
+
+fn debug(comptime mode: DebugMode, comptime fmt: str, any: anytype) void {
+    if (DEBUG & mode == 0) {
+        return;
+    }
     std.debug.print("[DEBUG] " ++ fmt ++ "\n", any);
 }
 
@@ -196,7 +206,7 @@ pub const WordIndex = struct {
             // debug("get token: {} -> {}", .{ _word, id });
             return id;
         } else {
-            debug("add new token: {} -> {}", .{ new_id, _word });
+            debug(PUT_WORD, "add new token: {} -> {}", .{ new_id, _word });
             // TODO: We can do this without copying by storing (string, bool) instead
             var new_word = try self.tokens.allocator.alloc(u8, _word.len);
             std.mem.copy(u8, new_word, _word);
@@ -358,30 +368,30 @@ const LearnBpeState = struct {
 /// Learns BPE from the given files.
 pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
     // get vocab
-    debug("Extracting vocabulary...", .{});
+    debug(LEARN_BPE, "Extracting vocabulary...", .{});
     var word_count = Vocab.init(allocator);
     try readWords(inputFile1, &word_count);
     if (inputFile2.len > 0) {
         try readWords(inputFile2, &word_count);
     }
-    debug("Vocabulary extrated, found {} words.", .{word_count.count()});
+    debug(LEARN_BPE, "Vocabulary extrated, found {} words.", .{word_count.count()});
 
     // a token is an int, it represents a string
     const reservation = @intCast(u32, 20 * n_pairs);
     var state = LearnBpeState.init(allocator);
     try state.ensureExtraCapacity(reservation);
-    debug("Initializing counters for 1-char tokens...", .{});
+    debug(LEARN_BPE, "Initializing counters for 1-char tokens...", .{});
     try initSingleChars(&word_count, &state);
-    debug("Counter initialized, found {} tokens", .{state.index.count()});
+    debug(LEARN_BPE, "Counter initialized, found {} tokens", .{state.index.count()});
 
-    debug("Counting pairs of chars ...", .{});
+    debug(LEARN_BPE, "Counting pairs of chars ...", .{});
     var word_counts = state.word_counts.span();
     for (state.full_words.span()) |word, wi| {
         try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
     }
-    debug("Found {} pairs.", .{state.pairs.count()});
+    debug(LEARN_BPE, "Found {} pairs.", .{state.pairs.count()});
 
-    debug("Recursively merging top pairs ...", .{});
+    debug(LEARN_BPE, "Recursively merging top pairs ...", .{});
     try printSortedBytePairs(&state, n_pairs, std.io.getStdOut());
 }
 
