@@ -15,8 +15,8 @@ const DebugMode = u32;
 const LEARN_BPE: u8 = 1;
 const READ_WORDS: u8 = 2;
 const PUT_WORD: u8 = 4;
-const FIND_MAX_P: u8 = 4;
-const DEBUG: u32 = LEARN_BPE | READ_WORDS;
+const MERGE_PAIRS: u8 = 8;
+const DEBUG: DebugMode = LEARN_BPE | MERGE_PAIRS;
 
 fn debug(comptime mode: DebugMode, comptime fmt: str, any: anytype) void {
     if (DEBUG & mode == 0) {
@@ -168,8 +168,8 @@ pub fn getVocab(inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
 }
 
 pub const WordIndex = struct {
-    ids: std.StringHashMap(u32) = undefined,
-    tokens: std.ArrayList(str) = undefined,
+    ids: std.StringHashMap(u32),
+    tokens: std.ArrayList(str),
     _buffer: [kMaxWordLen + kEndWord.len]u8 = [_]u8{0} ** (kMaxWordLen + kEndWord.len),
 
     pub fn init(allocator: *Allocator) !WordIndex {
@@ -245,15 +245,20 @@ const LearnBpeState = struct {
     pair_loc: PairLoc,
     contiguous_counts: std.ArrayList(PairCount),
     index: WordIndex,
+    _arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: *std.mem.Allocator) LearnBpeState {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        var arena_allocator = &arena.allocator;
+
         var state = LearnBpeState{
-            .full_words = std.ArrayList(std.ArrayList(u32)).init(allocator),
-            .word_counts = std.ArrayList(i32).init(allocator),
-            .pairs = PairCounts.init(allocator),
-            .pair_loc = PairLoc.init(allocator),
-            .contiguous_counts = std.ArrayList(PairCount).init(allocator),
-            .index = try WordIndex.init(allocator),
+            .full_words = std.ArrayList(std.ArrayList(u32)).init(arena_allocator),
+            .word_counts = std.ArrayList(i32).init(arena_allocator),
+            .pairs = PairCounts.init(arena_allocator),
+            .pair_loc = PairLoc.init(arena_allocator),
+            .contiguous_counts = std.ArrayList(PairCount).init(arena_allocator),
+            .index = try WordIndex.init(arena_allocator),
+            ._arena = arena,
         };
         return state;
     }
@@ -265,6 +270,7 @@ const LearnBpeState = struct {
         self.pair_loc.deinit();
         self.contiguous_counts.deinit();
         self.index.deinit();
+        self._arena.deinit();
     }
 
     pub fn ensureExtraCapacity(self: *LearnBpeState, capacity: usize) !void {
@@ -278,14 +284,14 @@ const LearnBpeState = struct {
     }
 
     /// Replaces a pair by a fixed entry, and update all counters.
-    pub fn mergeCounts(self: *LearnBpeState, merge: WordPair) !void {
+    pub fn mergeCounts(self: *LearnBpeState, merge: *PairCount) !void {
         var tokens = &self.index.tokens.items;
         // TODO: find this string somewhere else ?
-        var new_token = try strConcat(self.index.tokens.allocator, tokens.*[merge.w1], tokens.*[merge.w2]);
+        var new_token = try strConcat(&self._arena.allocator, tokens.*[merge.w1], tokens.*[merge.w2]);
         var new_token_id = try self.index.getOrPut(new_token, false);
 
         var full_words = self.full_words.span();
-        var where_it = self.pair_loc.get(merge).?.iterator();
+        var where_it = self.pair_loc.get(.{ .w1 = merge.w1, .w2 = merge.w2 }).?.iterator();
         while (where_it.next()) |wi| {
             var full_word = &full_words[wi.key];
             var cwi = self.word_counts.items[wi.key];
@@ -326,6 +332,7 @@ const LearnBpeState = struct {
                 cur_pair.w2 = new_token_id;
             }
         }
+        merge.*.count = -1;
     }
 
     fn getCount(self: *const LearnBpeState, w1: str, w2: str) i32 {
@@ -404,10 +411,11 @@ fn printSortedBytePairs(state: *LearnBpeState, n_pairs: i32, file: std.fs.File) 
         var max_p = findMaxPair(&state.contiguous_counts) orelse break;
         var tokens = &idx.tokens.items;
         _ = try print("{} {} {}\n", .{ tokens.*[max_p.w1], tokens.*[max_p.w2], max_p.count });
+        debug(MERGE_PAIRS, "{} {} {}", .{ tokens.*[max_p.w1], tokens.*[max_p.w2], max_p.count });
 
         // TODO: fix segfault introduced by mergeCounts
-        // try state.mergeCounts(.{ .w1 = max_p.w1, .w2 = max_p.w2 });
-        max_p.count = -1;
+        // try state.mergeCounts(max_p);
+        // debug(MERGE_PAIRS, "---", .{});
     }
 }
 
@@ -473,6 +481,14 @@ fn assertContainsPair(state: *LearnBpeState, w1: str, w2: str) void {
         .w1 = state.index.ids.get(w1).?,
         .w2 = state.index.ids.get(w2).?,
     }));
+}
+
+fn assertPairIs(state: *LearnBpeState, pair: PairCount, w1: str, w2: str) void {
+    assertContainsPair(state, w1, w2);
+    debug(MERGE_PAIRS, "pair.w1 = {}", .{state.index.tokens.items[pair.w1]});
+    debug(MERGE_PAIRS, "pair.w2 = {}", .{state.index.tokens.items[pair.w2]});
+    assert(state.index.ids.get(w1).? == pair.w1);
+    assert(state.index.ids.get(w2).? == pair.w2);
 }
 
 test "init count pair of chars" {
@@ -556,6 +572,30 @@ fn findMaxPair(pairs: *std.ArrayList(PairCount)) ?*PairCount {
     }
     if (max_p.count <= 0) return null;
     return max_p;
+}
+
+test "find pair with the highest count" {
+    var allocator = std.testing.allocator;
+    var vocab = Vocab.init(allocator);
+    defer vocab.deinit();
+    try vocab.put("hello", 1);
+    try vocab.put("world", 2);
+    try vocab.put("wo_", 2);
+
+    var state = LearnBpeState.init(allocator);
+    defer state.deinit();
+    try state.ensureExtraCapacity(16);
+    try initSingleChars(&vocab, &state);
+    assert(state.index.ids.count() == 9);
+
+    var word_counts = state.word_counts.span();
+    for (state.full_words.span()) |word, wi| {
+        try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
+    }
+    var max_pair = findMaxPair(&state.contiguous_counts).?;
+    assertPairIs(&state, max_pair.*, "w", "o");
+
+    try state.mergeCounts(max_pair);
 }
 
 pub fn strConcat(allocator: *Allocator, a: str, b: str) ![]u8 {
