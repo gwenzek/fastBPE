@@ -7,7 +7,11 @@ const warn = std.debug.warn;
 const debug = std.debug.warn;
 const OutOfMemory = std.mem.Allocator.Error;
 
-pub fn applybpe(input: File, codes: File, vocab_path: []const u8, allocator: *Allocator) !void {
+pub fn applybpe(input: File, codes: File, vocab_path: []const u8, base_allocator: *Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(base_allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
     var applyer = try BPEApplyer.fromFile(codes, vocab_path, allocator);
     const buff: comptime usize = 8192;
     var line_buff: [buff]u8 = undefined;

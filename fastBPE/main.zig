@@ -37,7 +37,8 @@ pub fn main() anyerror!void {
         .never_unmap = true,
     }){};
     var alloc = &GPA.allocator;
-    defer std.debug.assert(GPA.deinit());
+    // GPA.deinit() returns true when we have leaks.
+    defer std.debug.assert(!GPA.deinit());
 
     var args = try std.process.argsAlloc(alloc);
     defer std.process.argsFree(alloc, args);
