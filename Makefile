@@ -1,7 +1,9 @@
 SHELL=zsh
 # Only enable this when developping and compilation time is the bottleneck
-RELEASE=
-# RELEASE="-Drelease-fast=true"
+# RELEASE=
+RELEASE="-Drelease-fast=true"
+
+VALGRIND_OUT="test/valgrind/valgrind_out.txt"
 
 OS := $(shell uname)
 ifeq "$(OS)" "Darwin"
@@ -12,9 +14,7 @@ endif
 
 .DELETE_ON_ERROR:
 
-# TODO: fix small_vocab_diff (learnBPE)
-# test: small_vocab_diff small_bpe_diff small_apply_diff
-test: small_bpe_diff small_apply_diff
+test: small_vocab_diff small_bpe_diff small_apply_diff
 	ls fastBPE/*.zig | xargs -n1 zig test
 
 build: ./zig-cache/bin/fastBPE libfastBPE_apply.$(DLL_EXT) bin_cpp/fastBPE
@@ -64,7 +64,6 @@ small_vocab_diff: output/readme.cpp.vocab.txt output/readme.zig.vocab.txt output
 	diff -W80 $< output/readme.zig_stdin.vocab.txt
 
 small_bpe_diff: output/sample.txt.cpp.bpe.txt output/sample.txt.zig.bpe.txt output/sample.txt.zig_stdin.bpe.txt
-	# BPE aren't the same because it depends on the hashmap iteration order in the two languages.
 	diff -W80 $< <(head -10 output/sample.txt.zig.bpe.txt)
 	diff -W80 $< <(head -10 output/sample.txt.zig_stdin.bpe.txt)
 
@@ -101,6 +100,7 @@ test_zig_python: output/sample.txt.cpp.bpe.txt libfastBPE_apply.0.1.0.dylib
 clean:
 	[[ ! -f bin_cpp/fastBPE ]] || rm bin_cpp/fastBPE
 	[[ ! -f ./zig-cache ]] || rm ./zig-cache
+	[[ ! -f test/valgrind ]] || rm test/valgrind
 	[[ ! -f libfastBPE_apply.$(DLL_EXT) ]] || rm libfastBPE_apply.$(DLL_EXT)
 	rm output/*.apply.txt || true
 
@@ -109,3 +109,23 @@ profile_python_wrapper: output/fr.train.cpp.bpe.txt
 	mkdir -p output/flame
 	py-spy record -r500 --native --output output/flame/zig_ctypes.svg python test/test_zig.py data/fr.train $< > /dev/null
 	py-spy record -r500 --native --output output/flame/cpp_cython.svg python test/test_cpp.py data/fr.train $< > /dev/null
+
+test/valgrind/%.txt: fastBPE/%.zig
+	mkdir -p $(@D)
+	zig test $< 2>&1 | perl -ln -e 's:.*/zig-cache/o/(.*)/test:zig-cache/o/$$1/valgrind.txt:g && print' | xargs -n1 make VALGRIND_OUT=$@
+
+zig-cache/o/%/valgrind.txt: zig-cache/o/%/test
+	# We are only interested by the first issue found by valgrind.
+	f(){sleep 10; pkill -9 valgrind}; f&
+	valgrind -s $< 2>&1 | head -1000 > ${VALGRIND_OUT}
+	ln -s `realpath ${VALGRIND_OUT}` $@
+	echo "Valgrind generated ${VALGRIND_OUT}"
+
+test_valgrind:
+	ls fastBPE/*.zig | perl -ln -e 's:fastBPE/(.*)\.zig:test/valgrind/$$1.txt:g && print' | xargs make
+
+valgrind: test/valgrind/sample_learn.txt
+
+test/valgrind/sample_learn.txt: ./zig-cache/bin/fastBPE
+	f(){sleep 10; pkill -9 valgrind}; f&
+	valgrind ./zig-cache/bin/fastBPE learnbpe 40000 `realpath data/sample.txt` 2>&1 | head -1000 > $@
