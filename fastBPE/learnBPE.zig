@@ -16,7 +16,7 @@ const LEARN_BPE: u8 = 1;
 const READ_WORDS: u8 = 2;
 const PUT_WORD: u8 = 4;
 const MERGE_PAIRS: u8 = 8;
-const DEBUG: DebugMode = LEARN_BPE | MERGE_PAIRS;
+const DEBUG: DebugMode = LEARN_BPE;
 
 fn debug(comptime mode: DebugMode, comptime fmt: str, any: anytype) void {
     if (DEBUG & mode == 0) {
@@ -135,8 +135,14 @@ fn hasMoreOccurences(context: void, kv1: Vocab.Entry, kv2: Vocab.Entry) bool {
 
 /// Counts words in given **tokenized** files.
 /// Output is sorted by decreasing order.
-pub fn getVocab(inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
+pub fn getVocab(inputFile1: str, inputFile2: str, base_allocator: *Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(base_allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
     var word_count = Vocab.init(allocator);
+    defer word_count.deinit();
+
     try readWords(inputFile1, &word_count);
     if (inputFile2.len > 0) {
         try readWords(inputFile2, &word_count);
@@ -156,7 +162,6 @@ pub fn getVocab(inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
     }
 
     // var entries: []VocabEntry = word_count.unmanaged.recycle();
-    defer word_count.deinit();
     log.info("Word count: {}\n", .{entries.len});
     std.sort.sort(VocabEntry, entries, {}, hasMoreOccurences);
 
@@ -246,22 +251,17 @@ const LearnBpeState = struct {
     pair_loc: PairLoc,
     contiguous_counts: std.ArrayList(PairCount),
     index: WordIndex,
-    _arena: *std.heap.ArenaAllocator,
+    allocator: *Allocator,
 
-    pub fn init(allocator: *std.mem.Allocator) LearnBpeState {
-        var arena: *std.heap.ArenaAllocator = allocator.create(std.heap.ArenaAllocator) catch unreachable;
-        arena.* = std.heap.ArenaAllocator.init(allocator);
-        var arena_allocator = &arena.allocator;
-        assert(arena.child_allocator == allocator);
-
+    pub fn init(allocator: *Allocator) LearnBpeState {
         var state = LearnBpeState{
-            .full_words = std.ArrayList(std.ArrayList(u32)).init(arena_allocator),
-            .word_counts = std.ArrayList(i32).init(arena_allocator),
-            .pairs = PairCounts.init(arena_allocator),
-            .pair_loc = PairLoc.init(arena_allocator),
-            .contiguous_counts = std.ArrayList(PairCount).init(arena_allocator),
-            .index = try WordIndex.init(arena_allocator),
-            ._arena = arena,
+            .full_words = std.ArrayList(std.ArrayList(u32)).init(allocator),
+            .word_counts = std.ArrayList(i32).init(allocator),
+            .pairs = PairCounts.init(allocator),
+            .pair_loc = PairLoc.init(allocator),
+            .contiguous_counts = std.ArrayList(PairCount).init(allocator),
+            .index = try WordIndex.init(allocator),
+            .allocator = allocator,
         };
         return state;
     }
@@ -273,9 +273,6 @@ const LearnBpeState = struct {
         self.pair_loc.deinit();
         self.contiguous_counts.deinit();
         self.index.deinit();
-        var allocator = self._arena.child_allocator;
-        self._arena.deinit();
-        allocator.destroy(self._arena);
     }
 
     pub fn ensureExtraCapacity(self: *LearnBpeState, capacity: usize) !void {
@@ -294,7 +291,7 @@ const LearnBpeState = struct {
         var tokens = &self.index.tokens.items;
         // TODO: find this string somewhere else ?
         var new_token = try strConcat(
-            &self._arena.allocator,
+            self.allocator,
             tokens.*[merge.w1],
             tokens.*[merge.w2],
         );
@@ -379,7 +376,7 @@ const LearnBpeState = struct {
             // TODO: preallocate mem for pairs and pair_loc
             // TODO: handle case where index is full
             _ = try self.pairs.put(pair, pc_ptr);
-            var loc = std.AutoHashMap(u32, void).init(self.pair_loc.allocator);
+            var loc = std.AutoHashMap(u32, void).init(self.allocator);
             _ = try loc.put(wid, {});
             _ = try self.pair_loc.put(pair, loc);
         }
@@ -387,9 +384,13 @@ const LearnBpeState = struct {
 };
 
 /// Learns BPE from the given files.
-pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, allocator: *Allocator) !void {
+pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, base_allocator: *Allocator) !void {
     // get vocab
     debug(LEARN_BPE, "Extracting vocabulary...", .{});
+    var arena = std.heap.ArenaAllocator.init(base_allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
     var word_count = Vocab.init(allocator);
     defer word_count.deinit();
     try readWords(inputFile1, &word_count);
@@ -428,7 +429,6 @@ fn printSortedBytePairs(state: *LearnBpeState, n_pairs: i32, file: std.fs.File) 
         _ = try print("{} {} {}\n", .{ tokens.items[max_p.w1], tokens.items[max_p.w2], max_p.count });
         debug(MERGE_PAIRS, "{} {} {}", .{ tokens.items[max_p.w1], tokens.items[max_p.w2], max_p.count });
 
-        // TODO: fix segfault introduced by mergeCounts
         try state.mergeCounts(max_p);
     }
 }
@@ -465,7 +465,10 @@ fn initSingleChars(word_count: *Vocab, state: *LearnBpeState) !void {
 }
 
 test "init single chars" {
-    var allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
     var vocab = Vocab.init(allocator);
     defer vocab.deinit();
     try vocab.put("hello", 1);
@@ -498,10 +501,11 @@ fn assertContainsPair(state: *LearnBpeState, w1: str, w2: str) void {
             }));
         } else {
             log.err("Index doesn't contain ({}, {}), {} not found.", .{ w1, w2, w2 });
-            assert(false);
+            assert(state.index.ids.contains(w2));
         }
     } else {
         log.err("Index doesn't contain ({}, {}), {} not found.", .{ w1, w2, w1 });
+        assert(state.index.ids.contains(w1));
     }
 }
 
@@ -519,7 +523,10 @@ fn assertPairIs(state: *LearnBpeState, pair: PairCount, w1: str, w2: str) void {
 }
 
 test "init count pair of chars" {
-    var allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
     var vocab = Vocab.init(allocator);
     defer vocab.deinit();
     try vocab.put("hello", 1);
@@ -551,7 +558,7 @@ fn countPairOfChars(word: std.ArrayList(u32), wi: u32, count: i32, state: *Learn
     var contiguous_counts = &state.contiguous_counts;
     try contiguous_counts.ensureCapacity(contiguous_counts.items.len + word.items.len);
 
-    for (word.span()) |token, i| {
+    for (word.items) |token, i| {
         cur_pair.w1 = cur_pair.w2;
         cur_pair.w2 = token;
         if (i == 0) // cur_pair.w1 isn't correctly initialized
@@ -604,7 +611,10 @@ fn findMaxPair(pairs: *std.ArrayList(PairCount)) ?*PairCount {
 }
 
 test "find pair with the highest count" {
-    var allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
     var vocab = Vocab.init(allocator);
     defer vocab.deinit();
     try vocab.put("hello", 1);
@@ -629,9 +639,7 @@ test "find pair with the highest count" {
 
     max_pair = findMaxPair(&state.contiguous_counts).?;
     assertPairIs(&state, max_pair.*, "r", "_</w>");
-    // TODO: fix segfault here
     try state.mergeCounts(max_pair);
-    log.err("We didn't segfault !!!", .{});
 }
 
 pub fn strConcat(allocator: *Allocator, a: str, b: str) ![]u8 {
