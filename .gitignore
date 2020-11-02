@@ -2,6 +2,7 @@
 /output/
 /zig-cache/
 /bin_cpp
+/test/valgrind/
 
 *.o
 *.dylib
