@@ -19,7 +19,7 @@ test: small_vocab_diff small_bpe_diff small_apply_diff
 
 build: ./zig-cache/bin/fastBPE libfastBPE_apply.$(DLL_EXT) bin_cpp/fastBPE
 
-./zig-cache/bin/fastB%E libfastBPE_apply%$(DLL_EXT): fastBPE/*.zig
+./zig-cache/bin/fastB%E libfastBPE_apply%$(DLL_EXT): build.zig fastBPE/*.zig
 	mkdir -p output
 	zig build $(RELEASE)
 

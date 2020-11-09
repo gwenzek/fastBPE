@@ -2,6 +2,18 @@ const std = @import("std");
 const Builder = std.build.Builder;
 const BuildMode = std.builtin.Mode;
 
+const TRACY_PATH = "./tracy/";
+
+fn addTracy(target: anytype) void {
+    target.*.addIncludeDir(TRACY_PATH);
+    target.*.addCSourceFile(
+        TRACY_PATH ++ "TracyClient.cpp",
+        &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" },
+    );
+    target.*.linkSystemLibraryName("c++");
+    target.*.linkLibC();
+}
+
 pub fn build(b: *Builder) void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -18,16 +30,10 @@ pub fn build(b: *Builder) void {
 
     // Tracy integration
     const enable_tracy = true;
+    // TODO: figure how to ready this option from Zig code.
+    // const enable_tracy = b.option(bool, "enable-tracy", "Enable Tracy profiling") orelse false;
     if (enable_tracy) {
-        const tracy_path = "./tracy";
-        const client_cpp = std.fs.path.join(
-            b.allocator,
-            &[_][]const u8{ tracy_path, "TracyClient.cpp" },
-        ) catch unreachable;
-        exe.addIncludeDir(tracy_path);
-        exe.addCSourceFile(client_cpp, &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" });
-        exe.linkSystemLibraryName("c++");
-        exe.linkLibC();
+        addTracy(&exe);
     }
 
     exe.setTarget(target);
@@ -39,18 +45,12 @@ pub fn build(b: *Builder) void {
     lib.setBuildMode(mode);
     lib.setOutputDir(".");
     lib.install();
+    if (enable_tracy) {
+        addTracy(&lib);
+    }
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
     run_step.dependOn(&run_cmd.step);
-
-    // const sort_crash = b.addExecutable("fastBPE", "fastBPE/sort_crash.zig");
-    // sort_crash.setTarget(target);
-    // sort_crash.setBuildMode(mode);
-    // sort_crash.install();
-
-    // const sort_test = sort_crash.run();
-    // sort_test.step.dependOn(b.getInstallStep());
-    // run_step.dependOn(&sort_test.step);
 }
