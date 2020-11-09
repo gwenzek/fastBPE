@@ -88,6 +88,22 @@ export fn ctypes_bpe(codes_file: [*:0]const u8) ?*BPEApplyer {
     return heap_bpe;
 }
 
+export fn ctypes_learnbpe(n_pairs: i32, inputFile1: [*:0]const u8) void {
+    const allocator = std.heap.c_allocator;
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var realpath = std.os.realpathZ(inputFile1, &buf) catch |err| {
+        warn("Failed to resolve code file '{}': {}\n", .{ inputFile1, err });
+        return;
+    };
+    const file = std.mem.dupe(allocator, u8, realpath) catch |err| {
+        warn("Failed to copy filename '{}': {}\n", .{ realpath, err });
+        return;
+    };
+    defer allocator.free(file);
+
+    learn.learnbpe(n_pairs, file, "", allocator) catch unreachable;
+}
+
 var ctypes_output_buffer: std.ArrayList(u8) = undefined;
 
 export fn ctypes_apply_sentence(bpe: *BPEApplyer, sentence: [*]const u8, sentence_len: usize, out: [*]u8) usize {
