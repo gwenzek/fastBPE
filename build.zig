@@ -15,6 +15,21 @@ pub fn build(b: *Builder) void {
 
     const exe = b.addExecutable("fastBPE", "fastBPE/main.zig");
     exe.linkSystemLibrary("c");
+
+    // Tracy integration
+    const enable_tracy = true;
+    if (enable_tracy) {
+        const tracy_path = "./tracy";
+        const client_cpp = std.fs.path.join(
+            b.allocator,
+            &[_][]const u8{ tracy_path, "TracyClient.cpp" },
+        ) catch unreachable;
+        exe.addIncludeDir(tracy_path);
+        exe.addCSourceFile(client_cpp, &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" });
+        exe.linkSystemLibraryName("c++");
+        exe.linkLibC();
+    }
+
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();

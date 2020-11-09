@@ -1,7 +1,7 @@
 SHELL=zsh
 # Only enable this when developping and compilation time is the bottleneck
-# RELEASE=
-RELEASE="-Drelease-fast=true"
+RELEASE=
+# RELEASE="-Drelease-fast=true"
 
 VALGRIND_OUT="test/valgrind/valgrind_out.txt"
 
@@ -26,6 +26,10 @@ build: ./zig-cache/bin/fastBPE libfastBPE_apply.$(DLL_EXT) bin_cpp/fastBPE
 bin_cpp/fastBPE: fastBPE/fastBPE.hpp fastBPE/main.cc
 	mkdir -p bin_cpp
 	g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o $@
+
+bin_cpp/tracy:
+	mkdir -p bin_cpp
+	g++ -std=c++11 -pthread -O3 tracy/TracyClient.cpp -Itracy -o $@
 
 output/%.zig.vocab.txt: data/% ./zig-cache/bin/fastBPE
 	time ./zig-cache/bin/fastBPE getvocab `realpath $<` > $@
@@ -129,3 +133,5 @@ valgrind: test/valgrind/sample_learn.txt
 test/valgrind/sample_learn.txt: ./zig-cache/bin/fastBPE
 	f(){sleep 10; pkill -9 valgrind}; f&
 	valgrind ./zig-cache/bin/fastBPE learnbpe 40000 `realpath data/sample.txt` 2>&1 | head -1000 > $@
+
+tracy: bin_cpp/tracy

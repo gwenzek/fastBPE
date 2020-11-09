@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const tracy = @import("tracy.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.fs.File.Writer;
 const assert = std.debug.assert;
@@ -281,6 +282,7 @@ const LearnBpeState = struct {
         var full_len = @intCast(u32, len + capacity);
         try self.contiguous_counts.ensureCapacity(full_len);
         try self.pair_loc.ensureCapacity(full_len);
+        try self.pairs.ensureCapacity(full_len);
         // TODO: do we need to increase the index size here ?
         try self.index.ensureCapacity(full_len);
     }
@@ -373,9 +375,8 @@ const LearnBpeState = struct {
             const pc = PairCount.init(pair, count);
             var pc_ptr: *PairCount = try self.contiguous_counts.addOne();
             pc_ptr.* = pc;
-            // TODO: preallocate mem for pairs and pair_loc
             // TODO: handle case where index is full
-            _ = try self.pairs.put(pair, pc_ptr);
+            _ = self.pairs.putAssumeCapacity(pair, pc_ptr);
             var loc = std.AutoHashMap(u32, void).init(self.allocator);
             _ = try loc.put(wid, {});
             _ = try self.pair_loc.put(pair, loc);
@@ -409,10 +410,7 @@ pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, base_allocator: 
     debug(LEARN_BPE, "Counter initialized, found {} tokens", .{state.index.count()});
 
     debug(LEARN_BPE, "Counting pairs of chars ...", .{});
-    var word_counts = state.word_counts.span();
-    for (state.full_words.span()) |word, wi| {
-        try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
-    }
+    try countPairsOfChars(&state);
     debug(LEARN_BPE, "Found {} pairs.", .{state.pairs.count()});
 
     debug(LEARN_BPE, "Recursively merging top pairs ...", .{});
@@ -537,10 +535,7 @@ test "init count pair of chars" {
     try initSingleChars(&vocab, &state);
     assert(state.index.ids.count() == 8);
 
-    var word_counts = state.word_counts.span();
-    for (state.full_words.span()) |word, wi| {
-        try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
-    }
+    try countPairsOfChars(&state);
     // 5 chars in a word -> 4 bigrams. All bigrams are distinct.
     assert(state.pairs.count() == 8);
 
@@ -549,7 +544,16 @@ test "init count pair of chars" {
     assertContainsPair(&state, "l", "o</w>");
 }
 
-fn countPairOfChars(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpeState) !void {
+fn countPairsOfChars(state: *LearnBpeState) !void {
+    var word_counts = state.word_counts.items;
+    for (state.full_words.items) |word, wi| {
+        try countPairsOfCharFromWord(word, @intCast(u32, wi), word_counts[wi], state);
+    }
+}
+
+fn countPairsOfCharFromWord(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpeState) !void {
+    const full_trace = tracy.trace(@src());
+    defer full_trace.end();
     var first_round = true;
     var cur_pair = WordPair{};
     // Use pointers to actually modify the state.
@@ -559,6 +563,7 @@ fn countPairOfChars(word: std.ArrayList(u32), wi: u32, count: i32, state: *Learn
     try contiguous_counts.ensureCapacity(contiguous_counts.items.len + word.items.len);
 
     for (word.items) |token, i| {
+        // const word_trace = tracy.trace(@src());
         cur_pair.w1 = cur_pair.w2;
         cur_pair.w2 = token;
         if (i == 0) // cur_pair.w1 isn't correctly initialized
@@ -583,6 +588,8 @@ fn countPairOfChars(word: std.ArrayList(u32), wi: u32, count: i32, state: *Learn
             if (count > 0) _ = try set.put(wi, {});
             _ = try pair_loc.put(cur_pair, set);
         }
+
+        // word_trace.end();
     }
 }
 
@@ -626,10 +633,8 @@ test "find pair with the highest count" {
     try state.ensureExtraCapacity(16);
     try initSingleChars(&vocab, &state);
 
-    var word_counts = state.word_counts.span();
-    for (state.full_words.span()) |word, wi| {
-        try countPairOfChars(word, @intCast(u32, wi), word_counts[wi], &state);
-    }
+    try countPairsOfChars(&state);
+
     var max_pair = findMaxPair(&state.contiguous_counts).?;
     assertPairIs(&state, max_pair.*, "w", "o");
     try state.mergeCounts(max_pair);
