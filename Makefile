@@ -1,7 +1,7 @@
 SHELL=zsh
 # Only enable this when developping and compilation time is the bottleneck
-RELEASE=
-# RELEASE="-Drelease-fast=true"
+# RELEASE=
+RELEASE="-Drelease-fast=true"
 
 VALGRIND_OUT="test/valgrind/valgrind_out.txt"
 
@@ -134,4 +134,10 @@ test/valgrind/sample_learn.txt: ./zig-cache/bin/fastBPE
 	f(){sleep 10; pkill -9 valgrind}; f&
 	valgrind ./zig-cache/bin/fastBPE learnbpe 40000 `realpath data/sample.txt` 2>&1 | head -1000 > $@
 
-tracy: bin_cpp/tracy
+tracy: output/bpe.zig.trace
+	tracy $<
+
+output/bpe.zig.trace:
+	tracy_capture -f -o $@ &
+	rm output/fr.train.zig.bpe.txt
+	make big_bpe_diff
