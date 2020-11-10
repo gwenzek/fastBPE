@@ -4,15 +4,15 @@ import sys
 from pathlib import Path
 import time
 
-root = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent
 if sys.platform == "darwin":
-    zig = ctypes.CDLL(str(root / "libfastBPE_apply.dylib"))
+    zig = ctypes.CDLL(str(ROOT / "libfastBPE_apply.dylib"))
 else:
-    zig = ctypes.CDLL(str(root / "zig-cache/lib/libfastBPE_apply.so"))
+    zig = ctypes.CDLL(str(ROOT / "zig-cache/lib/libfastBPE_apply.so"))
 
 
 def encode(s):
-    return ctypes.create_string_buffer((str(s) + "\0").encode("utf8"))
+    return ctypes.create_string_buffer(str(s).encode("utf8")  + b"\0")
 
 
 zig.ctypes_bpe.argtypes = [ctypes.c_char_p]
@@ -25,6 +25,7 @@ zig.ctypes_apply_sentence.argtypes = [
     ctypes.POINTER(ctypes.c_char),
 ]
 
+zig.ctypes_learnbpe.argtypes = [ctypes.c_int32, ctypes.c_char_p]
 
 _buff = ctypes.create_string_buffer(b"_" * 4096)
 
@@ -35,8 +36,7 @@ def bpe_sent(bpe, sentence: bytes) -> bytes:
 
 
 def test_zig_bpe():
-    root = Path(__file__).parent.parent
-    sample = (root / "output/sample.txt.cpp.bpe.txt").resolve()
+    sample = (ROOT / "output/sample.txt.cpp.bpe.txt").resolve()
     bpe = zig.ctypes_bpe(encode(sample))
 
     assert bpe_sent(bpe, b"helllo worlld") == b"h@@ e@@ ll@@ l@@ o wo@@ r@@ ll@@ d"
@@ -57,7 +57,20 @@ def apply(file: str, codes: str):
         write(b"\n")
 
     delay = time.time() - start
-    print(f"Computed BPE on {i} sentences in {delay:.2f}s, using ctypes wrapper around zig implementation", file=sys.stderr)
+    print(
+        f"Computed BPE on {i} sentences in {delay:.2f}s, using ctypes wrapper around zig implementation",
+        file=sys.stderr,
+    )
+
+
+def test_learn_bpe(capsys):
+    sample = (ROOT / "data/sample.txt").resolve()
+    learned_cpp = (ROOT / "output/sample.txt.cpp.bpe.txt").read_text()
+    zig.ctypes_learnbpe(128, encode(sample))
+    captured = capsys.readouterr()
+    assert not captured.err
+    # This doesn't work cause the learnbpe isn't printing through python
+    # assert captured.out == learned_cpp
 
 
 if __name__ == "__main__":
