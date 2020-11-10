@@ -4,6 +4,7 @@ const tracy = @import("tracy.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.fs.File.Writer;
 const assert = std.debug.assert;
+const testing = std.testing;
 
 const clib = @cImport({
     @cInclude("sys/mman.h");
@@ -46,13 +47,13 @@ fn strCmp(word1: str, word2: str) bool {
 }
 
 test "compare string to prefix" {
-    assert(strCmp("foo", "foobar"));
-    assert(!strCmp("foobar", "foo"));
+    testing.expect(strCmp("foo", "foobar"));
+    testing.expect(!strCmp("foobar", "foo"));
 }
 
 test "compare string" {
-    assert(!strCmp("foo", "bar"));
-    assert(strCmp("bar", "foo"));
+    testing.expect(!strCmp("foo", "bar"));
+    testing.expect(strCmp("bar", "foo"));
 }
 
 fn readWordsFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
@@ -477,38 +478,38 @@ test "init single chars" {
     try initSingleChars(&vocab, &state);
     // 8 because there are 7 unique chars, but "o" appears both at the end
     // and in the middle of a word.
-    assert(state.index.ids.count() == 8);
+    testing.expectEqual(state.index.ids.count(), 8);
 
-    assert(state.index.ids.contains("h"));
-    assert(state.index.ids.contains("e"));
-    assert(state.index.ids.contains("l"));
-    assert(state.index.ids.contains("o</w>"));
+    testing.expect(state.index.ids.contains("h"));
+    testing.expect(state.index.ids.contains("e"));
+    testing.expect(state.index.ids.contains("l"));
+    testing.expect(state.index.ids.contains("o</w>"));
 
-    assert(state.index.ids.contains("w"));
-    assert(state.index.ids.contains("o"));
-    assert(state.index.ids.contains("r"));
-    assert(state.index.ids.contains("d</w>"));
+    testing.expect(state.index.ids.contains("w"));
+    testing.expect(state.index.ids.contains("o"));
+    testing.expect(state.index.ids.contains("r"));
+    testing.expect(state.index.ids.contains("d</w>"));
 }
 
-fn assertContainsPair(state: *LearnBpeState, w1: str, w2: str) void {
+fn expectContainsPair(state: *LearnBpeState, w1: str, w2: str) void {
     if (state.index.ids.get(w1)) |w1_id| {
         if (state.index.ids.get(w2)) |w2_id| {
-            assert(state.pairs.contains(.{
+            testing.expect(state.pairs.contains(.{
                 .w1 = w1_id,
                 .w2 = w2_id,
             }));
         } else {
             log.err("Index doesn't contain ({}, {}), {} not found.", .{ w1, w2, w2 });
-            assert(state.index.ids.contains(w2));
+            testing.expect(state.index.ids.contains(w2));
         }
     } else {
         log.err("Index doesn't contain ({}, {}), {} not found.", .{ w1, w2, w1 });
-        assert(state.index.ids.contains(w1));
+        testing.expect(state.index.ids.contains(w1));
     }
 }
 
-fn assertPairIs(state: *LearnBpeState, pair: PairCount, w1: str, w2: str) void {
-    assertContainsPair(state, w1, w2);
+fn expectPairIs(state: *LearnBpeState, pair: PairCount, w1: str, w2: str) void {
+    expectContainsPair(state, w1, w2);
     var w1_id = state.index.ids.get(w1).?;
     var w2_id = state.index.ids.get(w2).?;
     if (w1_id != pair.w1 or w2_id != pair.w2) {
@@ -539,9 +540,9 @@ test "init count pair of chars" {
     // 5 chars in a word -> 4 bigrams. All bigrams are distinct.
     assert(state.pairs.count() == 8);
 
-    assertContainsPair(&state, "h", "e");
-    assertContainsPair(&state, "e", "l");
-    assertContainsPair(&state, "l", "o</w>");
+    expectContainsPair(&state, "h", "e");
+    expectContainsPair(&state, "e", "l");
+    expectContainsPair(&state, "l", "o</w>");
 }
 
 fn countPairsOfChars(state: *LearnBpeState) !void {
@@ -637,15 +638,15 @@ test "find pair with the highest count" {
     try countPairsOfChars(&state);
 
     var max_pair = findMaxPair(&state.contiguous_counts).?;
-    assertPairIs(&state, max_pair.*, "w", "o");
+    expectPairIs(&state, max_pair.*, "w", "o");
     try state.mergeCounts(max_pair);
-    assertContainsPair(&state, "w", "o");
+    expectContainsPair(&state, "w", "o");
     // TODO: also check that the word "wor_" is not currently split as "wo r _" in word_parts
-    assertContainsPair(&state, "wo", "r");
-    assertContainsPair(&state, "wo", "_</w>");
+    expectContainsPair(&state, "wo", "r");
+    expectContainsPair(&state, "wo", "_</w>");
 
     max_pair = findMaxPair(&state.contiguous_counts).?;
-    assertPairIs(&state, max_pair.*, "r", "_</w>");
+    expectPairIs(&state, max_pair.*, "r", "_</w>");
     try state.mergeCounts(max_pair);
 }
 
