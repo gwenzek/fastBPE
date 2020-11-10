@@ -17,6 +17,7 @@ const LEARN_BPE: u8 = 1;
 const READ_WORDS: u8 = 2;
 const PUT_WORD: u8 = 4;
 const MERGE_PAIRS: u8 = 8;
+const COUNT_PAIRS_OF_CHARS: u8 = 16;
 const DEBUG: DebugMode = LEARN_BPE;
 
 fn debug(comptime mode: DebugMode, comptime fmt: str, any: anytype) void {
@@ -219,8 +220,8 @@ pub const WordIndex = struct {
             std.mem.copy(u8, new_word, _word);
             // We update the key so that we point to the newly allocated string
             // instead of the buffer.
-            res.entry.*.key = new_word;
-            res.entry.*.value = new_id;
+            res.entry.key = new_word;
+            res.entry.value = new_id;
             self.tokens.appendAssumeCapacity(new_word);
             return new_id;
         }
@@ -246,7 +247,9 @@ const PairCounts = std.AutoHashMap(WordPair, *PairCount);
 const PairLoc = std.AutoHashMap(WordPair, std.AutoHashMap(u32, void));
 
 const LearnBpeState = struct {
-    full_words: std.ArrayList(std.ArrayList(u32)),
+    // word_parts represents the bpe-parts making up a word.
+    // It starts with unicode chars and those get merged when we learn new byte-pairs.
+    word_parts: std.ArrayList(std.ArrayList(u32)),
     word_counts: std.ArrayList(i32),
     pairs: PairCounts,
     pair_loc: PairLoc,
@@ -256,7 +259,7 @@ const LearnBpeState = struct {
 
     pub fn init(allocator: *Allocator) LearnBpeState {
         var state = LearnBpeState{
-            .full_words = std.ArrayList(std.ArrayList(u32)).init(allocator),
+            .word_parts = std.ArrayList(std.ArrayList(u32)).init(allocator),
             .word_counts = std.ArrayList(i32).init(allocator),
             .pairs = PairCounts.init(allocator),
             .pair_loc = PairLoc.init(allocator),
@@ -268,7 +271,7 @@ const LearnBpeState = struct {
     }
 
     pub fn deinit(self: *LearnBpeState) void {
-        self.full_words.deinit();
+        self.word_parts.deinit();
         self.word_counts.deinit();
         self.pairs.deinit();
         self.pair_loc.deinit();
@@ -289,26 +292,22 @@ const LearnBpeState = struct {
 
     /// Replaces a pair by a fixed entry, and update all counters.
     pub fn mergeCounts(self: *LearnBpeState, merge: *PairCount) !void {
-        merge.*.count = -1;
-        var tokens = &self.index.tokens.items;
+        merge.count = -1;
+        var tokens = self.index.tokens.items;
         // TODO: find this string somewhere else ?
-        var new_token = try strConcat(
-            self.allocator,
-            tokens.*[merge.w1],
-            tokens.*[merge.w2],
-        );
+        var new_token = try strConcat(self.allocator, tokens[merge.w1], tokens[merge.w2]);
         var new_token_id = try self.index.getOrPut(new_token, false);
 
-        var full_words = self.full_words.span();
+        var word_parts = self.word_parts.items;
         var where_it = self.pair_loc.get(.{ .w1 = merge.w1, .w2 = merge.w2 }).?.iterator();
         while (where_it.next()) |wi| {
-            var full_word = &full_words[wi.key];
+            var parts = &word_parts[wi.key];
             var cwi = self.word_counts.items[wi.key];
-            try self.ensureExtraCapacity(full_word.items.len);
-            var cur_pair = WordPair{ .w2 = full_word.items[0] };
+            try self.ensureExtraCapacity(parts.items.len);
+            var cur_pair = WordPair{ .w2 = parts.items[0] };
             var j: usize = 0;
-            while (j < full_word.items.len) : (j += 1) {
-                const w = full_word.items[j];
+            while (j < parts.items.len) : (j += 1) {
+                const w = parts.items[j];
                 if (j == 0) continue;
 
                 cur_pair.w1 = cur_pair.w2;
@@ -321,22 +320,22 @@ const LearnBpeState = struct {
 
                 // change count for word before us.
                 if (j > 1) {
-                    const w0 = full_word.items[j - 2];
+                    const w0 = parts.items[j - 2];
                     try self.incCount(w0, cur_pair.w1, -cwi, wi.key);
                     try self.incCount(w0, new_token_id, cwi, wi.key);
                 }
 
-                // Remove [w1, w2] from full_word insert w1@@w2 instead.
+                // Remove [w1, w2] from parts insert w1@@w2 instead.
                 // TODO only mark the token and remove later.
-                full_word.items[j - 1] = new_token_id;
+                parts.items[j - 1] = new_token_id;
 
                 // update count for next token
-                if (j + 1 < full_word.items.len) {
-                    const w3 = full_word.items[j + 1];
+                if (j + 1 < parts.items.len) {
+                    const w3 = parts.items[j + 1];
                     try self.incCount(cur_pair.w2, w3, -cwi, wi.key);
                     try self.incCount(new_token_id, w3, cwi, wi.key);
                 }
-                _ = full_word.orderedRemove(j);
+                _ = parts.orderedRemove(j);
 
                 cur_pair.w2 = new_token_id;
             }
@@ -358,14 +357,15 @@ const LearnBpeState = struct {
         if (count == 0) return;
         const pair = WordPair{ .w1 = w1, .w2 = w2 };
         var tokens = self.index.tokens.items;
+        debug(MERGE_PAIRS, "incCount({}, {}, {}, {})", .{ tokens[w1], tokens[w2], count, wid });
         if (self.pairs.get(pair)) |kv| {
             // assert(kv.value.count + count >= 0);
             debug(MERGE_PAIRS, "Incrementing count of ({}, {}, {}) by {}", .{ tokens[w1], tokens[w2], kv.count, count });
             const old_count = kv.count;
             kv.count += count;
             if (count > 0) {
-                var loc = &self.pair_loc.get(pair).?;
-                _ = try loc.put(wid, {});
+                var loc = self.pair_loc.getEntry(pair) orelse unreachable;
+                _ = try loc.value.put(wid, {});
             }
             // should we remove from `pair_loc` if kv.value.count falls to 0 ?
         } else {
@@ -376,7 +376,7 @@ const LearnBpeState = struct {
             var pc_ptr: *PairCount = try self.contiguous_counts.addOne();
             pc_ptr.* = pc;
             // TODO: handle case where index is full
-            _ = self.pairs.putAssumeCapacity(pair, pc_ptr);
+            _ = try self.pairs.put(pair, pc_ptr);
             var loc = std.AutoHashMap(u32, void).init(self.allocator);
             _ = try loc.put(wid, {});
             _ = try self.pair_loc.put(pair, loc);
@@ -419,20 +419,20 @@ pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, base_allocator: 
 
 fn printSortedBytePairs(state: *LearnBpeState, n_pairs: i32, file: std.fs.File) !void {
     // TODO: make this an iterator, and move the printing out of the iterator
+    const trace = tracy.trace(@src());
+    defer trace.end();
     const print = file.writer().print;
     var tokens = &state.index.tokens;
     var i: usize = 0;
     while (i < n_pairs) : (i += 1) {
         var max_p = findMaxPair(&state.contiguous_counts) orelse break;
         _ = try print("{} {} {}\n", .{ tokens.items[max_p.w1], tokens.items[max_p.w2], max_p.count });
-        debug(MERGE_PAIRS, "{} {} {}", .{ tokens.items[max_p.w1], tokens.items[max_p.w2], max_p.count });
-
         try state.mergeCounts(max_p);
     }
 }
 
 fn initSingleChars(word_count: *Vocab, state: *LearnBpeState) !void {
-    try state.full_words.ensureCapacity(word_count.count());
+    try state.word_parts.ensureCapacity(word_count.count());
     var idx = &state.index;
     var word_counts = &state.word_counts;
     try word_counts.ensureCapacity(word_count.count());
@@ -440,7 +440,7 @@ fn initSingleChars(word_count: *Vocab, state: *LearnBpeState) !void {
     while (wc_it.next()) |wc| {
         var realLength: i32 = 0;
         var word: str = wc.key;
-        var current_word = std.ArrayList(u32).init(state.full_words.allocator);
+        var current_word = std.ArrayList(u32).init(state.allocator);
         try current_word.ensureCapacity(word.len);
         word_counts.appendAssumeCapacity(wc.value);
 
@@ -458,7 +458,7 @@ fn initSingleChars(word_count: *Vocab, state: *LearnBpeState) !void {
         }
         var id = try idx.getOrPut(word[lastStart..], true);
         current_word.appendAssumeCapacity(id);
-        state.*.full_words.appendAssumeCapacity(current_word);
+        state.word_parts.appendAssumeCapacity(current_word);
     }
 }
 
@@ -545,51 +545,52 @@ test "init count pair of chars" {
 }
 
 fn countPairsOfChars(state: *LearnBpeState) !void {
+    const trace = tracy.trace(@src());
+    defer trace.end();
     var word_counts = state.word_counts.items;
-    for (state.full_words.items) |word, wi| {
+    debug(COUNT_PAIRS_OF_CHARS, "Will counts pairs of chars from {} full words", .{state.word_parts.items.len});
+    for (state.word_parts.items) |word, wi| {
+        const count = word_counts[wi];
         try countPairsOfCharFromWord(word, @intCast(u32, wi), word_counts[wi], state);
     }
+    debug(COUNT_PAIRS_OF_CHARS, "Done Counting", .{});
 }
 
 fn countPairsOfCharFromWord(word: std.ArrayList(u32), wi: u32, count: i32, state: *LearnBpeState) !void {
-    const full_trace = tracy.trace(@src());
-    defer full_trace.end();
+    const trace = tracy.trace(@src());
+    defer trace.end();
+
     var first_round = true;
     var cur_pair = WordPair{};
     // Use pointers to actually modify the state.
     var pairs = &state.pairs;
     var pair_loc = &state.pair_loc;
     var contiguous_counts = &state.contiguous_counts;
+    debug(COUNT_PAIRS_OF_CHARS, "Counting from @{} (len: {}, count: {})", .{ wi, word.items.len, count });
     try contiguous_counts.ensureCapacity(contiguous_counts.items.len + word.items.len);
-
     for (word.items) |token, i| {
-        // const word_trace = tracy.trace(@src());
         cur_pair.w1 = cur_pair.w2;
         cur_pair.w2 = token;
+
         if (i == 0) // cur_pair.w1 isn't correctly initialized
             continue;
 
         if (pairs.get(cur_pair)) |pair| {
             pair.count += count;
-            var w = pair_loc.get(cur_pair);
+            var w = pair_loc.getEntry(cur_pair) orelse unreachable;
             assert(count > 0);
-            if (count > 0) {
-                _ = try w.?.put(wi, {});
-            } else {
-                _ = w.?.remove(wi);
-            }
+            _ = try w.value.put(@intCast(u32, wi), {});
         } else {
             const pair = PairCount.init(cur_pair, count);
             var pc_ptr: *PairCount = contiguous_counts.addOneAssumeCapacity();
             pc_ptr.* = pair;
 
+            // TODO: handle too many pairs
             _ = try pairs.put(cur_pair, pc_ptr);
-            var set = std.AutoHashMap(u32, void).init(pair_loc.allocator);
+            var set = std.AutoHashMap(u32, void).init(state.allocator);
             if (count > 0) _ = try set.put(wi, {});
             _ = try pair_loc.put(cur_pair, set);
         }
-
-        // word_trace.end();
     }
 }
 
@@ -639,6 +640,7 @@ test "find pair with the highest count" {
     assertPairIs(&state, max_pair.*, "w", "o");
     try state.mergeCounts(max_pair);
     assertContainsPair(&state, "w", "o");
+    // TODO: also check that the word "wor_" is not currently split as "wo r _" in word_parts
     assertContainsPair(&state, "wo", "r");
     assertContainsPair(&state, "wo", "_</w>");
 
