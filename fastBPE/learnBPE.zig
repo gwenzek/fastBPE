@@ -383,8 +383,8 @@ const LearnBpeState = struct {
         }
     }
 };
-
 /// Learns BPE from the given files.
+// TODO: allow to write to a file
 pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, base_allocator: *Allocator) !void {
     // get vocab
     debug(LEARN_BPE, "Extracting vocabulary...", .{});
