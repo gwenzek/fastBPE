@@ -1,6 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const tracy = @import("tracy.zig");
+
+pub const enable_tracy = @import("build_options").enable_tracy;
+const tracy = if (!enable_tracy) @import("tracy.zig") else @import("tracy_fake.zig");
+
 const Allocator = std.mem.Allocator;
 const Writer = std.fs.File.Writer;
 const assert = std.debug.assert;

@@ -4,14 +4,17 @@ const BuildMode = std.builtin.Mode;
 
 const TRACY_PATH = "./tracy/";
 
-fn addTracy(target: anytype) void {
-    target.*.addIncludeDir(TRACY_PATH);
-    target.*.addCSourceFile(
+fn tryAddTracy(enabled: bool, target: anytype) void {
+    target.addBuildOption(bool, "enable_tracy", enabled);
+
+    if (!enabled) return;
+    target.addIncludeDir(TRACY_PATH);
+    target.addCSourceFile(
         TRACY_PATH ++ "TracyClient.cpp",
         &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" },
     );
-    target.*.linkSystemLibraryName("c++");
-    target.*.linkLibC();
+    target.linkSystemLibraryName("c++");
+    target.linkLibC();
 }
 
 pub fn build(b: *Builder) void {
@@ -29,25 +32,23 @@ pub fn build(b: *Builder) void {
     exe.linkSystemLibrary("c");
 
     // Tracy integration
-    const enable_tracy = true;
     // TODO: figure how to ready this option from Zig code.
-    // const enable_tracy = b.option(bool, "enable-tracy", "Enable Tracy profiling") orelse false;
+    const enable_tracy = b.option(bool, "enable_tracy", "Enable Tracy profiling") orelse false;
     if (enable_tracy) {
-        addTracy(&exe);
+        const tracy_dir = std.fs.cwd().openDir(TRACY_PATH, .{}) catch @panic("Tracy dir " ++ TRACY_PATH ++ "' not found.");
     }
+    tryAddTracy(enable_tracy, exe);
 
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
 
-    const lib = b.addSharedLibrary("fastBPE_apply", "fastBPE/applyBPE.zig", b.version(0, 1, 0));
+    const lib = b.addSharedLibrary("fastBPE_apply", "fastBPE/applyBPE.zig", b.version(0, 2, 0));
     lib.linkSystemLibrary("c");
     lib.setBuildMode(mode);
     lib.setOutputDir(".");
     lib.install();
-    if (enable_tracy) {
-        addTracy(&lib);
-    }
+    tryAddTracy(enable_tracy, lib);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = exe.run();

@@ -1,7 +1,5 @@
 pub const std = @import("std");
 
-pub const enable = !std.builtin.is_test;
-
 extern fn ___tracy_emit_zone_begin_callstack(
     srcloc: *const ___tracy_source_location_data,
     depth: c_int,
@@ -27,13 +25,7 @@ pub const ___tracy_c_zone_context = extern struct {
     }
 };
 
-pub const Ctx = if (enable) ___tracy_c_zone_context else struct {
-    pub fn end(self: Ctx) void {}
-};
-
-pub inline fn trace(comptime src: std.builtin.SourceLocation) Ctx {
-    if (!enable) return .{};
-
+pub inline fn trace(comptime src: std.builtin.SourceLocation) ___tracy_c_zone_context {
     const loc: ___tracy_source_location_data = .{
         .name = null,
         .function = src.fn_name.ptr,

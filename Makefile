@@ -27,10 +27,6 @@ bin_cpp/fastBPE: fastBPE/fastBPE.hpp fastBPE/main.cc
 	mkdir -p bin_cpp
 	g++ -std=c++11 -pthread -O3 fastBPE/main.cc -IfastBPE -o $@
 
-bin_cpp/tracy:
-	mkdir -p bin_cpp
-	g++ -std=c++11 -pthread -O3 tracy/TracyClient.cpp -Itracy -o $@
-
 output/%.zig.vocab.txt: data/% ./zig-cache/bin/fastBPE
 	time ./zig-cache/bin/fastBPE getvocab `realpath $<` > $@
 
@@ -50,7 +46,7 @@ output/%.cpp.bpe.txt: data/% bin_cpp/fastBPE
 	time bin_cpp/fastBPE learnbpe 40000 `realpath $<` > $@
 
 output/%.zig.apply.txt: data/% output/%.cpp.bpe.txt ./zig-cache/bin/fastBPE
-	# Reuse codes learnt from C++ to limit diffs to the 'p' implementation
+	# Reuse codes learnt from C++ to limit diffs to the 'learn' implementation
 	time ./zig-cache/bin/fastBPE applybpe - `realpath $(word 2,$^)` < $< > $@
 
 output/%.zig_ctypes.apply.txt: data/% output/%.cpp.bpe.txt libfastBPE_apply.$(DLL_EXT)
@@ -134,10 +130,9 @@ test/valgrind/sample_learn.txt: ./zig-cache/bin/fastBPE
 	f(){sleep 10; pkill -9 valgrind}; f&
 	valgrind ./zig-cache/bin/fastBPE learnbpe 40000 `realpath data/sample.txt` 2>&1 | head -1000 > $@
 
-tracy: output/bpe.zig.trace ./zig-cache/bin/fastBPE
+tracy: output/bpe.zig.trace
 	tracy $<
 
-output/bpe.zig.trace:
-	tracy_capture -f -o $@ &
-	rm output/fr.train.zig.bpe.txt
-	make big_bpe_diff
+output/bpe.zig.trace: fastBPE/*.zig
+	zig build -Denable_tracy=true $(RELEASE)
+	tracy_capture -f -o $@ ./zig-cache/bin/fastBPE learnbpe 40000 `realpath data/fr.train` > /dev/null
