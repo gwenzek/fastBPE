@@ -79,7 +79,7 @@ big_vocab_diff: output/fr.train.cpp.vocab.txt output/fr.train.zig.vocab.txt outp
 	diff -W80 $< output/fr.train.zig.vocab.txt | head
 
 big_bpe_diff: output/fr.train.cpp.bpe.txt output/fr.train.zig.bpe.txt output/fr.train.zig_stdin.bpe.txt
-	# BPE aren't the same because it depends on the hashmap iteration order in the two languages.
+	# Figure out why we don't have the exact same pair count
 	diff -W80 output/fr.train.zig_stdin.bpe.txt output/fr.train.zig_stdin.bpe.txt | head
 	diff -W80 $< output/fr.train.zig.bpe.txt | head
 
@@ -134,7 +134,7 @@ test/valgrind/sample_learn.txt: ./zig-cache/bin/fastBPE
 	f(){sleep 10; pkill -9 valgrind}; f&
 	valgrind ./zig-cache/bin/fastBPE learnbpe 40000 `realpath data/sample.txt` 2>&1 | head -1000 > $@
 
-tracy: output/bpe.zig.trace
+tracy: output/bpe.zig.trace ./zig-cache/bin/fastBPE
 	tracy $<
 
 output/bpe.zig.trace:

@@ -4,6 +4,7 @@ const tracy = @import("tracy.zig");
 const Allocator = std.mem.Allocator;
 const Writer = std.fs.File.Writer;
 const assert = std.debug.assert;
+const failTest = std.debug.panic;
 const testing = std.testing;
 
 const clib = @cImport({
@@ -94,6 +95,7 @@ fn readWordsFromBuff(word_count: *Vocab, buffer: []u8) !u64 {
 pub fn readWords(fp: str, word_count: *Vocab) !void {
     var n_words: u64 = 0;
     // Read from stdin
+    var line_no: u32 = 0;
     if (fp.len == 1 and fp[0] == '-') {
         var line_buf: [4096]u8 = undefined;
         const stdin = std.io.bufferedInStream(std.io.getStdIn().inStream()).inStream();
@@ -101,10 +103,12 @@ pub fn readWords(fp: str, word_count: *Vocab) !void {
             error.StreamTooLong => blk: {
                 // Line is longer than buf size, skip it.
                 try stdin.skipUntilDelimiterOrEof(' ');
+                log.warn("Skipped line {}", .{line_no});
                 break :blk &line_buf;
             },
             else => |e| return e,
         }) |line| {
+            line_no += 1;
             n_words += try readWordsFromBuff(word_count, line);
         }
     } else {
@@ -291,8 +295,52 @@ const LearnBpeState = struct {
         try self.index.ensureCapacity(full_len);
     }
 
+    /// Pop the pair with the highest count and merge the two tokens.
+    pub fn popMaxPair(self: *LearnBpeState) ?PairCount {
+        const trace = tracy.trace(@src());
+        defer trace.end();
+        // findMaxPair is taking ~40x longer than mergeCounts
+        // TODO: can we sort pairs, and keep them sorted during merge ?
+        const max_p = self.findMaxPair() orelse return null;
+        const max_p_copy = max_p.*;
+        self.mergeCounts(max_p) catch |err| switch (err) {
+            error.OutOfMemory => {
+                @panic("OutOfMemory, can't generate more pairs");
+            },
+        };
+        return max_p_copy;
+    }
+
+    fn findMaxPair(self: *LearnBpeState) ?*PairCount {
+        const trace = tracy.trace(@src());
+        defer trace.end();
+        var counts = self.contiguous_counts.items;
+        if (counts.len == 0) return null;
+        var zero = PairCount{
+            .w1 = 0,
+            .w2 = 0,
+            .count = -1,
+        };
+        var max_p: *PairCount = &zero;
+        for (counts) |*x| {
+            if (x.count > max_p.count) {
+                max_p = x;
+            } else if (x.count == max_p.count) {
+                if (x.w1 < max_p.w1) {
+                    max_p = x;
+                } else if (x.w1 == max_p.w1 and x.w2 < max_p.w2) {
+                    max_p = x;
+                }
+            }
+        }
+        if (max_p.count <= 0) return null;
+        return max_p;
+    }
+
     /// Replaces a pair by a fixed entry, and update all counters.
-    pub fn mergeCounts(self: *LearnBpeState, merge: *PairCount) !void {
+    fn mergeCounts(self: *LearnBpeState, merge: *PairCount) !void {
+        const trace = tracy.trace(@src());
+        defer trace.end();
         merge.count = -1;
         var tokens = self.index.tokens.items;
         // TODO: find this string somewhere else ?
@@ -355,6 +403,8 @@ const LearnBpeState = struct {
 
     /// Increments the count for the pair (w1, w2), found in word 'wid'.
     fn incCount(self: *LearnBpeState, w1: u32, w2: u32, count: i32, wid: u32) !void {
+        const trace = tracy.trace(@src());
+        defer trace.end();
         if (count == 0) return;
         const pair = WordPair{ .w1 = w1, .w2 = w2 };
         var tokens = self.index.tokens.items;
@@ -368,13 +418,13 @@ const LearnBpeState = struct {
                 var loc = self.pair_loc.getEntry(pair) orelse unreachable;
                 _ = try loc.value.put(wid, {});
             }
-            // should we remove from `pair_loc` if kv.value.count falls to 0 ?
+            // TODO: should we remove from `pair_loc` if kv.value.count falls to 0 ?
         } else {
             // can't decrement from inexisting pair.
             assert(count > 0);
             debug(MERGE_PAIRS, "Creating PairCount ({}, {}, {})", .{ tokens[w1], tokens[w2], count });
             const pc = PairCount.init(pair, count);
-            var pc_ptr: *PairCount = try self.contiguous_counts.addOne();
+            const pc_ptr: *PairCount = try self.contiguous_counts.addOne();
             pc_ptr.* = pc;
             // TODO: handle case where index is full
             _ = try self.pairs.put(pair, pc_ptr);
@@ -384,8 +434,9 @@ const LearnBpeState = struct {
         }
     }
 };
+
 /// Learns BPE from the given files.
-// TODO: allow to write to a file
+/// TODO: allow to write to a file
 pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, base_allocator: *Allocator) !void {
     // get vocab
     debug(LEARN_BPE, "Extracting vocabulary...", .{});
@@ -419,16 +470,14 @@ pub fn learnbpe(n_pairs: i32, inputFile1: str, inputFile2: str, base_allocator: 
 }
 
 fn printSortedBytePairs(state: *LearnBpeState, n_pairs: i32, file: std.fs.File) !void {
-    // TODO: make this an iterator, and move the printing out of the iterator
     const trace = tracy.trace(@src());
     defer trace.end();
     const print = file.writer().print;
     var tokens = &state.index.tokens;
     var i: usize = 0;
     while (i < n_pairs) : (i += 1) {
-        var max_p = findMaxPair(&state.contiguous_counts) orelse break;
+        var max_p = (state.popMaxPair()) orelse break;
         _ = try print("{} {} {}\n", .{ tokens.items[max_p.w1], tokens.items[max_p.w2], max_p.count });
-        try state.mergeCounts(max_p);
     }
 }
 
@@ -492,19 +541,11 @@ test "init single chars" {
 }
 
 fn expectContainsPair(state: *LearnBpeState, w1: str, w2: str) void {
-    if (state.index.ids.get(w1)) |w1_id| {
-        if (state.index.ids.get(w2)) |w2_id| {
-            testing.expect(state.pairs.contains(.{
-                .w1 = w1_id,
-                .w2 = w2_id,
-            }));
-        } else {
-            log.err("Index doesn't contain ({}, {}), {} not found.", .{ w1, w2, w2 });
-            testing.expect(state.index.ids.contains(w2));
-        }
-    } else {
-        log.err("Index doesn't contain ({}, {}), {} not found.", .{ w1, w2, w1 });
-        testing.expect(state.index.ids.contains(w1));
+    const w1_id = state.index.ids.get(w1) orelse failTest("Index doesn't contain ({0}, {1}), {0} is unknow.", .{ w1, w2 });
+    const w2_id = state.index.ids.get(w2) orelse failTest("Index doesn't contain ({0}, {1}), {1} is unknow.", .{ w1, w2 });
+    const pair: WordPair = .{ .w1 = w1_id, .w2 = w2_id };
+    if (!state.pairs.contains(pair)) {
+        failTest("Index doesn't contain ({} ({}), {} ({}))", .{ w1, w1_id, w2, w2_id });
     }
 }
 
@@ -595,30 +636,6 @@ fn countPairsOfCharFromWord(word: std.ArrayList(u32), wi: u32, count: i32, state
     }
 }
 
-fn findMaxPair(pairs: *std.ArrayList(PairCount)) ?*PairCount {
-    var counts = pairs.items;
-    assert(counts.len > 0);
-    var zero = PairCount{
-        .w1 = 0,
-        .w2 = 0,
-        .count = -1,
-    };
-    var max_p: *PairCount = &zero;
-    for (counts) |*x| {
-        if (x.count > max_p.count) {
-            max_p = x;
-        } else if (x.count == max_p.count) {
-            if (x.w1 < max_p.w1) {
-                max_p = x;
-            } else if (x.w1 == max_p.w1 and x.w2 < max_p.w2) {
-                max_p = x;
-            }
-        }
-    }
-    if (max_p.count <= 0) return null;
-    return max_p;
-}
-
 test "find pair with the highest count" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -637,24 +654,19 @@ test "find pair with the highest count" {
 
     try countPairsOfChars(&state);
 
-    var max_pair = findMaxPair(&state.contiguous_counts).?;
-    expectPairIs(&state, max_pair.*, "w", "o");
-    try state.mergeCounts(max_pair);
+    var max_pair = state.popMaxPair().?;
+    expectPairIs(&state, max_pair, "w", "o");
     expectContainsPair(&state, "w", "o");
     // TODO: also check that the word "wor_" is not currently split as "wo r _" in word_parts
     expectContainsPair(&state, "wo", "r");
     expectContainsPair(&state, "wo", "_</w>");
 
-    max_pair = findMaxPair(&state.contiguous_counts).?;
-    expectPairIs(&state, max_pair.*, "r", "_</w>");
-    try state.mergeCounts(max_pair);
+    max_pair = state.popMaxPair().?;
+    expectPairIs(&state, max_pair, "r", "_</w>");
 }
 
 pub fn strConcat(allocator: *Allocator, a: str, b: str) ![]u8 {
-    const result = try allocator.alloc(u8, a.len + b.len);
-    std.mem.copy(u8, result, a);
-    std.mem.copy(u8, result[a.len..], b);
-    return result;
+    return try std.mem.concat(allocator, u8, &[_]str{ a, b });
 }
 
 pub fn resolve(file_path: str) std.fs.File {
